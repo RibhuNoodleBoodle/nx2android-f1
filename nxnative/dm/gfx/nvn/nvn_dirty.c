@@ -128,6 +128,7 @@ static void release_pages(range_t *r, uintptr_t p, uintptr_t q, _Atomic uint64_t
             open = 0;
         }
         if (i <= q && st == PG_BUSY) release_page(r, i, count);   // another thread is changing it: wait, then unprotect it if it ended up protected
+        if (i <= q && count != &g_faults) stamp_page(r, i);       // host write prep or explicit release on an already-writable page still advances its generation
     }
 }
 static void release_range(const void *addr, size_t len, _Atomic uint64_t *count) {
@@ -252,13 +253,14 @@ void nvn_dirty_protect(const void *addr, size_t len) {
     if (!r) return;
     uintptr_t a = (uintptr_t)addr, p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift;
     // Consecutive pages are merged into one mprotect (per-page calls reach thousands per frame on the first upload of large textures; character select page startup frame 5: 4888 calls).
-    // Pages already PROT / BUSY break the consecutive run: do not protect again, and do not touch pages another thread is changing
+    // Pages already PROT / BUSY break the consecutive run: do not protect again, and wait for pages another thread is changing
     uintptr_t run = 0; int open = 0;
     for (uintptr_t i = p; i <= q + 1; i++) {
         uint8_t st = PG_NONE;
         int took = i <= q && atomic_compare_exchange_strong(&r->state[i], &st, PG_BUSY);
         if (took && !open) { run = i; open = 1; }
         if (!took && open) { atomic_fetch_add(&r->nmp, 1); mp(r->base + (run << g_shift), (i - run) << g_shift, PROT_READ); for (uintptr_t k = run; k < i; k++) { atomic_store(&r->span[k], (uint32_t)p + 1); atomic_store(&r->state[k], PG_PROT); } open = 0; }
+        if (!took && i <= q && st == PG_BUSY && busy_wait(r, i)) i--;
     }
 }
 uint64_t nvn_dirty_now(void) { return atomic_load(&g_now); }

@@ -639,6 +639,7 @@ HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", "fsp-srv → pread(2)", 
         if (r == 0) break;
         got += r;
     }
+    if (got) dm_guest_write_prepare(buf, got);
     *out = got;
     if (g_fslog) { pthread_mutex_lock(&g_fslog_lock);
         static int hash_on = -1; if (hash_on < 0) hash_on = getenv("DM_FSLOG_HASH") != NULL;   // DM_FSLOG_HASH=1: append a column with the FNV-1a 64 of the content read (to compare whether the bytes read from two resource packs match)

@@ -9,6 +9,8 @@
 #include "../gfx/tex/nvn_deswizzle.h"
 #include "nvn_hmap.h"
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #define BCDEC_STATIC
 #define BCDEC_BC4BC5_PRECISE
 #define BCDEC_IMPLEMENTATION
@@ -236,8 +238,9 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
     if (im->packaged < 100) im->packaged++;
     VkCommandBuffer cb = vk_upload_cmd();
     if (im->layout != VK_IMAGE_LAYOUT_GENERAL) vk_tex_prepare(cb, im);
+    uint64_t stamp = nvn_dirty_now();
     nvn_dirty_protect(t->mem, t->L.size);
-    im->pkg_stamp = nvn_dirty_now(); im->pkg_span = nvn_dirty_span(t->mem, t->L.size); im->pkg_seen = im->pkg_stamp;
+    im->pkg_stamp = stamp; im->pkg_span = nvn_dirty_span(t->mem, t->L.size); im->pkg_seen = im->pkg_stamp;
     im->pkg_mem = t->mem; im->pkg_len = t->L.size; im->pkg_released = 0;
     int linear = (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != 0;
     unsigned bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1, bpb = f->bpb;
@@ -290,27 +293,27 @@ extern uint64_t g_tex_frame;   // presents so far, for the packaged textures' la
 // last EVICT_KEEP presents go (their memory now holds another texture; one drawn again is made and filled again). Called with g_img_mu held
 enum { EVICT_KEEP = 10 };
 static uint64_t g_img_n, g_img_bytes, g_img_evicted;   // live images and their bytes, images evicted so far (vk_tex_sweep's line)
-static void img_drop(vkimg_t *im) { vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
+static void img_drop(vkimg_t *im) { vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem && im->novl == 0) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
 static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     akey ks[64]; int n = 0;
     for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
         vkimg_t *o = g_by_key.vals[i]; if (!o || o->pool != pool || o->off >= off + size || off >= o->off + o->size) continue;
-        if (g_tex_frame <= o->used || g_tex_frame - o->used <= 4) continue;
+        if (g_tex_frame <= o->used) continue;
         memcpy(&ks[n++], g_by_key.keys + (size_t)i * g_by_key.klen, sizeof(akey));
     }
     for (int j = 0; j < n; j++) { vkimg_t *o = nvn_hm_get(&g_by_key, &ks[j]); if (!o) continue; nvn_hm_del(&g_by_key, &ks[j]); img_drop(o); g_img_evicted++; }
 }
 
-// DM_VK_TEX_MAX_MB (start-up / env): maximum texture cache budget in MB (default 220 MB on mobile).
-// DM_VK_TEX_KEEP_FRAMES (start-up / env): textures not looked up for this many presents are evicted as idle (default 120 = ~4s at 30 fps).
+// DM_VK_TEX_MAX_MB (start-up / env): maximum texture cache budget in MB (default 950 MB on mobile).
+// DM_VK_TEX_KEEP_FRAMES (start-up / env): textures not looked up for this many presents are evicted as idle (default 600 = ~20s at 30 fps).
 static uint64_t tex_max_bytes(void) {
     static uint64_t v = 0;
-    if (!v) { const char *e = getenv("DM_VK_TEX_MAX_MB"); uint64_t mb = e && atoi(e) > 0 ? (uint64_t)atoi(e) : 220; v = mb << 20; }
+    if (!v) { const char *e = getenv("DM_VK_TEX_MAX_MB"); uint64_t mb = e && atoi(e) > 0 ? (uint64_t)atoi(e) : 950; v = mb << 20; }
     return v;
 }
 static uint64_t tex_idle_frames(void) {
     static uint64_t v = 0;
-    if (!v) { const char *e = getenv("DM_VK_TEX_KEEP_FRAMES"); v = e && atoi(e) > 0 ? (uint64_t)atoi(e) : 120; }
+    if (!v) { const char *e = getenv("DM_VK_TEX_KEEP_FRAMES"); v = e && atoi(e) > 0 ? (uint64_t)atoi(e) : 600; }
     return v;
 }
 typedef struct { uint64_t used; int is_serial; akey k; uint64_t serial; uint64_t size; } tex_evict_t;
@@ -319,10 +322,9 @@ static int tex_evict_cmp(const void *a, const void *b) {
     return x < y ? -1 : x > y ? 1 : 0;
 }
 static inline int tex_evictable(const vkimg_t *im) {
-    if (!im) return 0;
-    if (g_tex_frame <= im->used || g_tex_frame - im->used < 60) return 0;
-    if (im->packaged || im->pool || im->lin_mem) return 1;
-    return 0;
+    if (!im || !im->packaged || im->gpu_w || im->lin_mem) return 0;
+    if (g_tex_frame <= im->used || g_tex_frame - im->used < 120) return 0;
+    return 1;
 }
 
 // Evict oldest textures (LRU) when allocating a new image would breach the memory budget. Called with g_img_mu held
@@ -406,8 +408,10 @@ vkimg_t *vk_tex(const tex_t *t) {
         if (!im->packaged) { im->packaged = 1; pkg_upload(im, t, f); }
         else {
             uint64_t now = nvn_dirty_now();
-            if (now != im->pkg_seen && nvn_dirty_since_span(im->pkg_span, t->mem, t->L.size, im->pkg_stamp)) pkg_upload(im, t, f);   // pages written since the upload
-            im->pkg_seen = now;
+            if (now != im->pkg_seen) {
+                if (nvn_dirty_since_span(im->pkg_span, t->mem, t->L.size, im->pkg_stamp)) pkg_upload(im, t, f);   // pages written since the upload
+                else im->pkg_seen = now;
+            }
         }
     } else if (fresh) vk_tex_prepare(vk_upload_cmd(), im);
     return im;
@@ -426,7 +430,7 @@ void vk_tex_sweep(void) {
     g_tex_frame++;
     uint64_t max_bytes = tex_max_bytes();
     int over_budget = g_img_bytes > max_bytes;
-    if ((g_tex_frame % 150 != 0) && (!over_budget || g_tex_frame % 30 != 0)) return;
+    if ((g_tex_frame % 60 != 0) && (!over_budget || g_tex_frame % 30 != 0)) return;
     uint64_t idle = 0, lru = 0, before = nvn_dirty_released();
     pthread_mutex_lock(&g_img_mu);
 
