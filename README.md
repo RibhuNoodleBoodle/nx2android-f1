@@ -69,7 +69,7 @@ Recent milestones focus on resolving OOM (Out-Of-Memory) crashes and memory thra
 1. Download the tool bundle for Windows or macOS.
 2. In the **Setup** tab: download missing Android NDK and .NET SDK dependencies, then place your dumped `prod.keys`.
 3. In the **Port** tab: select the folder containing your game dumps (`.nsp`, `.xci`, `.nsz`, `.xcz`).
-4. Select a custom Mesa Turnip driver package (`.zip` or `.so`) if running on Snapdragon 845 / Adreno 6xx devices to supply Vulkan 1.3/1.4 features.
+4. Select a custom Mesa Turnip driver package (`.zip` or `.so`) if running on Snapdragon 845 / Adreno 6xx devices to supply Vulkan 1.3/1.4 features (I recommend [Mr Purple's Drivers](https://github.com/MrPurple666/purple-turnip/releases)).
 5. Click **Port** to produce the APK and push assets directly to the device.
 
 ### Runtime Configuration (`env.txt`)
