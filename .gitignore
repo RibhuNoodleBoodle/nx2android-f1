@@ -26,3 +26,15 @@ title.keys
 
 # The player bundle (python packaging/build_bundle.py)
 /dist/
+
+# Local testing, notes, logs, and driver packages
+Argon.txt
+gemini_flash/
+Gemini_Flash/
+*.log
+*log*.txt
+release.zip
+*.zip
+Claude_Opus*.txt
+env_hades.txt
+optimize_poco_f1.sh
