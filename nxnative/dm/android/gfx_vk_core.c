@@ -321,10 +321,20 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
     if (!AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
     close(sv[0]); close(sv[1]);
     if (nfd < 1) { AHardwareBuffer_release(ahb); return -1; }
-    // copy the pool's current contents into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
+    // copy the pool's non-zero pages into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
     uint8_t *tmp = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0);
     int ok = tmp != MAP_FAILED;
-    if (ok) { memcpy(tmp, mem, size); munmap(tmp, size); }
+    if (ok) {
+        for (uint64_t off = 0; off < size; off += 4096) {
+            uint64_t n = size - off < 4096 ? size - off : 4096;
+            const uint64_t *w = (const uint64_t *)(mem + off);
+            uint64_t nw = n >> 3, nz = 0;
+            for (uint64_t k = 0; k < nw; k++) { if (w[k]) { nz = 1; break; } }
+            if (!nz && (n & 7)) { for (uint64_t b = nw << 3; b < n; b++) if (mem[off + b]) { nz = 1; break; } }
+            if (nz) memcpy(tmp + off, mem + off, n);
+        }
+        munmap(tmp, size);
+    }
     ok = ok && mmap(mem, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fds[0], 0) == mem;
     for (int i = 0; i < nfd; i++) close(fds[i]);
     if (!ok) { AHardwareBuffer_release(ahb); return -1; }
@@ -345,7 +355,7 @@ int vk_pool_remap_ro(void *mem, size_t len) {
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool && !rc; i++) {
         vkpool_t *p = &g_pool[i]; if (p->base != (uint64_t)(uintptr_t)mem || p->end - p->base != len) continue;
-        if (!p->zero_copy) { if (!p->shadow) { rc = -1; break; } done += p->hi - p->lo; continue; }   // a copied pool: nothing to map again (its protection stays as it is), and done, so defrag stops taking its pages busy
+        if (!p->zero_copy) { done += p->hi - p->lo; continue; }   // a copied or unrealized pool: nothing to map again (its protection stays as it is), and done, so defrag stops taking its pages busy
         int sv[2], fds[16], nfd = -1; if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { rc = -1; break; }
         if (!AHardwareBuffer_sendHandleToUnixSocket(p->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
         close(sv[0]); close(sv[1]);
@@ -356,11 +366,9 @@ int vk_pool_remap_ro(void *mem, size_t len) {
     pthread_rwlock_unlock(&g_pool_mu);
     return !rc && done == len ? 0 : -1;
 }
-static void pool_copy_back(vkpool_t *p) {   // the pages go back to anonymous memory with the buffer's contents (the game may reuse the memory)
+static void pool_copy_back(vkpool_t *p) {   // the pages go back to clean anonymous memory (the game may reuse the address range)
     uint64_t size = p->hi - p->lo; uint8_t *mem = (uint8_t *)(uintptr_t)p->lo;
-    uint8_t *save = malloc(size); if (save) memcpy(save, mem, size);
     mmap(mem, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-    if (save) { memcpy(mem, save, size); free(save); }
 }
 // Pools over ZC_CHUNK are made of chunks of at most that size, each a pool entry with an AHardwareBuffer of its own: the Adreno 830's gralloc allocator service
 // (vendor.qti.hardware.display.allocator-service, snapalloc) aborts on a BLOB of 812 MB ("ubsan: mul-overflow" in SnapConstraintManager::AlignmentToAlignedConstraints),
@@ -370,6 +378,45 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
 // DM_VK_ZEROCOPY_MAX_MB=<n>: pools bigger than n MB are copied, not zero-copy, and kept whole (a copied pool takes no hardware buffer, so no chunks). The Legion Y700
 // 2023's gralloc aborts the process (no error returned) allocating a hardware buffer for Unicorn Overlord's 860 MB pool, while its pools up to 250 MB are fine
 static int zc_over(uint64_t size) { static uint64_t m = 1; if (m == 1) { const char *e = getenv("DM_VK_ZEROCOPY_MAX_MB"); m = e && atoi(e) > 0 ? (uint64_t)atoi(e) << 20 : 0; } return m && size > m; }
+static pthread_mutex_t g_realize_mu = PTHREAD_MUTEX_INITIALIZER;
+VkBuffer vk_pool_buf(vkpool_t *p) {
+    if (!p) return VK_NULL_HANDLE;
+    if (__atomic_load_n(&p->realized, __ATOMIC_ACQUIRE)) return p->buf;
+    pthread_mutex_lock(&g_realize_mu);
+    if (!__atomic_load_n(&p->realized, __ATOMIC_RELAXED)) {
+        uint64_t size = p->hi - p->lo;
+        uint8_t *mem = (uint8_t *)(uintptr_t)p->lo;
+        nvn_dirty_release(mem, size);
+        int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : getenv("DM_VK_NO_ZEROCOPY") ? -4 : zc_over(p->end - p->base) ? -5 : pool_zero_copy(p, mem, size);
+        if (zc) {
+            static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx could not be zero-copy (%d): a GPU copy is refreshed before each submission (slow)", (void *)mem, (unsigned long long)size, zc);
+            VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
+            VKCHK(vkCreateBuffer(V.dev, &bi, NULL, &p->buf));
+            VkMemoryRequirements req; vkGetBufferMemoryRequirements(V.dev, p->buf, &req);
+            VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size,
+                vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
+            VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &p->mem)); VKCHK(vkBindBufferMemory(V.dev, p->buf, p->mem, 0));
+            void *m; VKCHK(vkMapMemory(V.dev, p->mem, 0, VK_WHOLE_SIZE, 0, &m));
+            memcpy(m, mem, size);
+            p->shadow = m;
+        }
+        static uint64_t zc_bytes, cp_bytes; if (zc) cp_bytes += size; else zc_bytes += size;
+        static int nlog; if (nlog++ < 32) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, copied %.1f MB)", (void *)mem, (unsigned long long)size, zc ? "copied" : "zero-copy", zc_bytes / 1048576.0, cp_bytes / 1048576.0);
+        __atomic_store_n(&p->realized, 1, __ATOMIC_RELEASE);
+    }
+    pthread_mutex_unlock(&g_realize_mu);
+    return p->buf;
+}
+void vk_pool_use_buffer(const void *mem, uint64_t off, uint64_t size) {
+    if (!mem || !size) return;
+    uint64_t lo = (uint64_t)(uintptr_t)mem + off, hi = lo + size;
+    for (uint64_t a = lo; a < hi; ) {
+        vkpool_t *p = vk_pool_of(a, 1);
+        if (!p) break;
+        vk_pool_buf(p);
+        a = p->hi;
+    }
+}
 void mtl_pool_add(const void *mem, uint64_t size) {
     vk_init();
     if (!size) return;
@@ -382,21 +429,8 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     if (g_npool == MAXPOOL) { pthread_rwlock_unlock(&g_pool_mu); die("[vk] too many memory pools"); }
     vkpool_t *p = &g_pool[g_npool]; memset(p, 0, sizeof *p);
     p->lo = (uint64_t)(uintptr_t)mem; p->hi = p->lo + size; p->base = base; p->end = end; { static uint64_t ser; p->serial = ++ser; }
-    int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : getenv("DM_VK_NO_ZEROCOPY") ? -4 : zc_over(end - base) ? -5 : pool_zero_copy(p, (uint8_t *)mem, size);
-    if (zc) {
-        static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx could not be zero-copy (%d): a GPU copy is refreshed before each submission (slow)", mem, (unsigned long long)size, zc);
-        VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
-        VKCHK(vkCreateBuffer(V.dev, &bi, NULL, &p->buf));
-        VkMemoryRequirements req; vkGetBufferMemoryRequirements(V.dev, p->buf, &req);
-        VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size,
-            vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
-        VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &p->mem)); VKCHK(vkBindBufferMemory(V.dev, p->buf, p->mem, 0));
-        void *m; VKCHK(vkMapMemory(V.dev, p->mem, 0, VK_WHOLE_SIZE, 0, &m)); p->shadow = m;
-    }
     g_npool++; pool_ord_make(); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
     pthread_rwlock_unlock(&g_pool_mu);
-    static uint64_t zc_bytes, cp_bytes; if (zc) cp_bytes += size; else zc_bytes += size;
-    static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : "zero-copy", zc_bytes / 1048576.0, cp_bytes / 1048576.0);
 }
 void mtl_pool_del(const void *mem) {
     for (;;) {   // every chunk of the pool
@@ -405,9 +439,14 @@ void mtl_pool_del(const void *mem) {
         if (i == g_npool) { pthread_rwlock_unlock(&g_pool_mu); return; }
         vkpool_t p = g_pool[i]; g_pool[i] = g_pool[--g_npool]; pool_ord_make(); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
         pthread_rwlock_unlock(&g_pool_mu);
-        if (p.zero_copy) pool_copy_back(&p);
-        vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference
-        if (p.ahb) AHardwareBuffer_release(p.ahb);
+        if (p.realized) {
+            if (p.zero_copy) pool_copy_back(&p);
+            else madvise((void *)(uintptr_t)p.lo, p.hi - p.lo, MADV_DONTNEED);
+            vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference
+            if (p.ahb) AHardwareBuffer_release(p.ahb);
+        } else {
+            madvise((void *)(uintptr_t)p.lo, p.hi - p.lo, MADV_DONTNEED);
+        }
     }
 }
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
@@ -432,7 +471,7 @@ uint32_t vk_pool_gen(void) { return __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIR
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) {
     vkpool_t *p = vk_pool_of(addr, len ? len : 1);
     if (!p) return 0;
-    *buf = p->buf; *off = addr - p->lo; return 1;
+    *buf = vk_pool_buf(p); *off = addr - p->lo; return *buf != VK_NULL_HANDLE;
 }
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     vkpool_t *p = vk_pool_of(addr, len ? len : 1);

@@ -295,17 +295,17 @@ static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     akey ks[64]; int n = 0;
     for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
         vkimg_t *o = g_by_key.vals[i]; if (!o || o->pool != pool || o->off >= off + size || off >= o->off + o->size) continue;
-        if (o->used == g_tex_frame) continue;
+        if (g_tex_frame <= o->used || g_tex_frame - o->used <= 4) continue;
         memcpy(&ks[n++], g_by_key.keys + (size_t)i * g_by_key.klen, sizeof(akey));
     }
     for (int j = 0; j < n; j++) { vkimg_t *o = nvn_hm_get(&g_by_key, &ks[j]); if (!o) continue; nvn_hm_del(&g_by_key, &ks[j]); img_drop(o); g_img_evicted++; }
 }
 
-// DM_VK_TEX_MAX_MB (start-up / env): maximum texture cache budget in MB (default 240 MB on mobile).
+// DM_VK_TEX_MAX_MB (start-up / env): maximum texture cache budget in MB (default 220 MB on mobile).
 // DM_VK_TEX_KEEP_FRAMES (start-up / env): textures not looked up for this many presents are evicted as idle (default 120 = ~4s at 30 fps).
 static uint64_t tex_max_bytes(void) {
     static uint64_t v = 0;
-    if (!v) { const char *e = getenv("DM_VK_TEX_MAX_MB"); uint64_t mb = e && atoi(e) > 0 ? (uint64_t)atoi(e) : 240; v = mb << 20; }
+    if (!v) { const char *e = getenv("DM_VK_TEX_MAX_MB"); uint64_t mb = e && atoi(e) > 0 ? (uint64_t)atoi(e) : 220; v = mb << 20; }
     return v;
 }
 static uint64_t tex_idle_frames(void) {
@@ -320,7 +320,7 @@ static int tex_evict_cmp(const void *a, const void *b) {
 }
 static inline int tex_evictable(const vkimg_t *im) {
     if (!im) return 0;
-    if (im->used == g_tex_frame) return 0;
+    if (g_tex_frame <= im->used || g_tex_frame - im->used < 60) return 0;
     if (im->packaged || im->pool || im->lin_mem) return 1;
     return 0;
 }
@@ -328,6 +328,9 @@ static inline int tex_evictable(const vkimg_t *im) {
 // Evict oldest textures (LRU) when allocating a new image would breach the memory budget. Called with g_img_mu held
 static void evict_to_budget(uint64_t target_bytes) {
     if (g_img_bytes <= target_bytes) return;
+    static uint64_t last_try;
+    if (last_try == g_tex_frame) return;
+    last_try = g_tex_frame;
     tex_evict_t *cands = NULL; size_t ncands = 0, cap_cands = 0;
     for (int m = 0; m < 2; m++) {
         nvn_hmap *h = m ? &g_by_serial : &g_by_key;
@@ -365,7 +368,6 @@ static void evict_to_budget(uint64_t target_bytes) {
             VKLOG("texture budget eviction: evicted %llu textures (%.1f MB), %llu live images remaining (%.1f MB of textures)",
                   (unsigned long long)evict_n, evict_bytes / 1048576.0,
                   (unsigned long long)g_img_n, g_img_bytes / 1048576.0);
-            vk_imgblk_sweep();
         }
     }
     free(cands);
@@ -388,7 +390,7 @@ vkimg_t *vk_tex(const tex_t *t) {
     if (!im) {
         if (keyed) evict_overlaps(k.pool, t->off, (int64_t)t->L.size);
         if (g_img_bytes + t->L.size > tex_max_bytes()) {
-            evict_to_budget(tex_max_bytes() * 3 / 4);
+            evict_to_budget(tex_max_bytes() * 7 / 8);
         }
         im = img_new(t, f); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
         im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags; g_img_n++; g_img_bytes += t->L.size;
@@ -453,7 +455,7 @@ void vk_tex_sweep(void) {
     }
     if (ncands > 0) {
         qsort(cands, ncands, sizeof *cands, tex_evict_cmp);
-        uint64_t target_bytes = max_bytes * 3 / 4;   // bring down to 75% when budget exceeded
+        uint64_t target_bytes = max_bytes * 7 / 8;   // bring down to 87.5% when budget exceeded
         for (size_t i = 0; i < ncands; i++) {
             tex_evict_t *c = &cands[i];
             int is_idle = (g_tex_frame > c->used && g_tex_frame - c->used >= idle_thresh);
@@ -556,7 +558,10 @@ static int packaged_tex(const tex_t *t) {
     pthread_mutex_lock(&g_cw_mu); int r = nvn_hm_get(&g_cpu_written, &t->serial) != NULL; pthread_mutex_unlock(&g_cw_mu);
     return r;
 }
-void mtl_tex_init(const tex_t *t) { (void)t; }
+void mtl_tex_init(const tex_t *t) {
+    if (t && t->pool && t->pool->mem && (t->d.target == NVN_TEXTURE_TARGET_BUFFER || (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET))))
+        vk_pool_use_buffer(t->pool->mem, (uint64_t)t->off, t->L.size);
+}
 void mtl_tex_release(tex_t *t) { (void)t; }   // images belong to their storage key, dropped with the pool
 int mtl_tex_gpu_owned(uint64_t serial) { (void)serial; return 0; }
 
