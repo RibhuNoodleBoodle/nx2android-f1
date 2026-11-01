@@ -11,7 +11,7 @@ This is the Android port of [nxnative](https://github.com/seedds/nxnative), whic
 
 ## Games
 
-These games play on Android. Tested on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830). The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR).
+These games play on Android. Tested on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830). Hardware BC-compressed texture support is present on Adreno and Xclipse GPUs; devices without hardware BCn support decode BC1–BC7 textures on the CPU. Older Adreno 6xx devices can bundle a custom Mesa Turnip Vulkan driver to supply Vulkan 1.3 support.
 
 | | |
 |:---:|:---:|
@@ -40,9 +40,9 @@ A game that is not in this table is not supported yet. The games we look at next
 3. **Port** tab: choose the folder with the game's NSP, XCI, NSZ or XCZ files (base game, update, DLC) and click **Port**.
 4. Tick **Install on the device when done** with the device plugged in and USB debugging on, or copy the APK and the data folder yourself.
 
-A game played by touch: tick **Touch game** on the Port tab (`--touch`). The on-screen gamepad then starts hidden and every touch but one on the menu button goes to the game; the pause menu shows the gamepad again.
+Older Qualcomm Adreno devices: choose an AdrenoTools / Mesa Turnip driver package (`.zip` or `.so`) in the **Vulkan driver** picker on the Port tab (`--driver <file>`). This upgrades older Adreno 6xx devices (such as Snapdragon 845 / Adreno 630 with stock driver 512.502.0) to full Vulkan 1.3 with dynamic rendering and timeline semaphores. If a bundled driver hard-crashes, the app automatically falls back to the system driver on the next launch (or set `DM_VK_SYSTEM_DRIVER=1` in `env.txt` to force the stock driver).
 
-To arrange the on-screen controls, open the pause menu's **Gamepad** tab and choose **Edit layout**: drag a control to move it, pinch or use **− / +** to resize it. **Save** keeps the layout for the next launch and **Cancel** discards your edits. **Snap to grid** (off at first, and remembered) shows a square grid and snaps each control's center to it as you drag.
+A game played by touch: tick **Touch game** on the Port tab (`--touch`). The on-screen gamepad then starts hidden and every touch but one on the menu button goes to the game; the pause menu shows the gamepad again.
 
 A game that crashes with "AllocateAddressRegion … refused (0x1803)" in its log needs more address space: port it again with a larger **Extra address space** on the Port tab (`--alias-headroom` on the command line). [packaging/INSTALL.md](packaging/INSTALL.md#when-something-goes-wrong) says more.
 
