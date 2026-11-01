@@ -599,6 +599,11 @@ static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last 
     }
     s->ndf = 0;
     vk_imgblk_sweep();
+    for (int i = 2; i < s->nblk; i++) {
+        vkDestroyBuffer(V.dev, s->blk[i].b, NULL);
+        if (s->blk[i].m) vkFreeMemory(V.dev, s->blk[i].m, NULL);
+    }
+    if (s->nblk > 2) s->nblk = 2;
     for (int i = 0; i < s->nblk; i++) s->blk[i].used = 0;
     for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(V.dev, s->dp[i], 0);
     s->dp_cur = 0; s->dp_counted = -1;
