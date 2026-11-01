@@ -295,14 +295,14 @@ static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     akey ks[64]; int n = 0;
     for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
         vkimg_t *o = g_by_key.vals[i]; if (!o || o->pool != pool || o->off >= off + size || off >= o->off + o->size) continue;
-        if (o->used == g_tex_frame || o->last_use > vk_fence_done()) continue;
+        if (o->used == g_tex_frame) continue;
         memcpy(&ks[n++], g_by_key.keys + (size_t)i * g_by_key.klen, sizeof(akey));
     }
     for (int j = 0; j < n; j++) { vkimg_t *o = nvn_hm_get(&g_by_key, &ks[j]); if (!o) continue; nvn_hm_del(&g_by_key, &ks[j]); img_drop(o); g_img_evicted++; }
 }
 
 // DM_VK_TEX_MAX_MB (start-up / env): maximum texture cache budget in MB (default 240 MB on mobile).
-// DM_VK_TEX_KEEP_FRAMES (start-up / env): textures not looked up for this many presents are evicted as idle (default 180 = ~6s at 30 fps).
+// DM_VK_TEX_KEEP_FRAMES (start-up / env): textures not looked up for this many presents are evicted as idle (default 120 = ~4s at 30 fps).
 static uint64_t tex_max_bytes(void) {
     static uint64_t v = 0;
     if (!v) { const char *e = getenv("DM_VK_TEX_MAX_MB"); uint64_t mb = e && atoi(e) > 0 ? (uint64_t)atoi(e) : 240; v = mb << 20; }
@@ -310,7 +310,7 @@ static uint64_t tex_max_bytes(void) {
 }
 static uint64_t tex_idle_frames(void) {
     static uint64_t v = 0;
-    if (!v) { const char *e = getenv("DM_VK_TEX_KEEP_FRAMES"); v = e && atoi(e) > 0 ? (uint64_t)atoi(e) : 180; }
+    if (!v) { const char *e = getenv("DM_VK_TEX_KEEP_FRAMES"); v = e && atoi(e) > 0 ? (uint64_t)atoi(e) : 120; }
     return v;
 }
 typedef struct { uint64_t used; int is_serial; akey k; uint64_t serial; uint64_t size; } tex_evict_t;
@@ -321,8 +321,7 @@ static int tex_evict_cmp(const void *a, const void *b) {
 static inline int tex_evictable(const vkimg_t *im) {
     if (!im) return 0;
     if (im->used == g_tex_frame) return 0;
-    if (im->last_use > vk_fence_done()) return 0;
-    if (im->packaged || im->pool) return 1;
+    if (im->packaged || im->pool || im->lin_mem) return 1;
     return 0;
 }
 

@@ -162,7 +162,14 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         }
         int rc = 0;
         if (size > g_heap_cur) rc = mprotect(g_heap + g_heap_cur, size - g_heap_cur, PROT_READ | PROT_WRITE);
-        else if (size < g_heap_cur) rc = mprotect(g_heap + size, g_heap_cur - size, PROT_NONE);
+        else if (size < g_heap_cur) {
+#if defined(__ANDROID__) || defined(__linux__)
+            madvise(g_heap + size, g_heap_cur - size, MADV_DONTNEED);
+#else
+            madvise(g_heap + size, g_heap_cur - size, MADV_FREE);
+#endif
+            rc = mprotect(g_heap + size, g_heap_cur - size, PROT_NONE);
+        }
         if (g_flag.svc) LOG("SetHeapSize %#zx -> base %p mprotect=%d errno=%d", size, g_heap, rc, errno);
         else if (size > g_heap_cur) LOG("[mem] heap %.2f GB (heap region %.2f GB)", size / 1073741824.0, g_heap_cap / 1073741824.0);
         g_heap_cur = size;

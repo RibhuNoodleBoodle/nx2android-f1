@@ -480,7 +480,7 @@ void vk_pools_sync(VkCommandBuffer cb) {
 struct vksub; static void pools_copy_back(const struct vksub *s);
 
 // ---------------- submission slots ----------------
-#define NSLOT 6
+#define NSLOT 3
 #define MAIN_CBS 32   // (allocated as used: DM_VK_PASS_SPLIT cuts inside passes as well)
 // GPU time: a timestamp at the start and end of each submission's main command buffer (one queue: their sum is the time the GPU was busy)
 static VkQueryPool g_tsq; uint64_t g_gpu_ns;
