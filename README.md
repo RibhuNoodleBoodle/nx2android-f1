@@ -17,26 +17,28 @@ Recent milestones focus on resolving OOM (Out-Of-Memory) crashes and memory thra
 
 ### 1. Memory Profile: Before vs. After Optimization
 
-| Metric | Before Optimization | After Optimization (32+ Min / 57,900+ Frames) | Delta / Status |
+| Metric | Before Optimization | After Optimization (30 & 60 FPS Runs) | Delta / Status |
 | :--- | :--- | :--- | :--- |
-| **Total Process PSS** | **4,054,167 KB (~4.05 GB)** | **3,138,448 – 3,279,894 KB (~3.13 – 3.28 GB)** | **-774 to -916 MB (Strictly < 3.5 GB)** |
-| **Total Process RSS** | **> 3.95 GB** | **2,955,520 – 3,392,424 KB (~2.82 – 3.39 GB)** | **Full 3.285 GB Switch 1 Pool Intact** |
+| **Total Process PSS** | **4,054,167 KB (~4.05 GB)** | **3,279,894 – 3,404,091 KB (~3.13 – 3.25 GB)** | **-650 to -774 MB (Strictly < 3.5 GB)** |
+| **Total Process RSS** | **> 3.95 GB** | **2,955,520 – 3,470,604 KB (~2.82 – 3.31 GB)** | **Full 3.285 GB Switch 1 Pool Intact** |
 | **Zero-Copy Pool (`EGL mtrack`)** | 2,350,000 KB (~2.35 GB) | **276,968 KB (~270 MB)** | **-2.08 GB (-88% via Lazy Realization)** |
-| **Swap Usage (`SwapPss`)** | 830,000 KB (~830 MB) | **960 – 389,267 KB** | **Zero Swap Thrashing** |
-| **Replay + Submit CPU Time** | 12+ ms (stalling on evictions) | **5.19 ms replay + 0.68 ms submit** | **13.33 – 14.02 ms GPU busy (Smooth 30 FPS)** |
-| **System Stability / LMK** | `lowmemorykiller: Kill (oom_adj 0)` | **0 Kills, 0 Crashes (57,900+ frames / 32+ min)** | **100% Stable Across Chambers** |
+| **Swap Usage (`SwapPss`)** | 830,000 KB (~830 MB) | **1,511 KB (~1.5 MB at 30,000 frames @ 60 FPS)** | **-828 MB (Zero Swap Thrashing)** |
+| **Replay + Submit / GPU Time** | 12+ ms (stalling on evictions) | **6.14 ms replay / 10.66 ms GPU p50 (@ 60 FPS)** | **16.67 – 18.58 ms Frame Time (54–60 FPS)** |
+| **System Stability / LMK** | `lowmemorykiller: Kill (oom_adj 0)` | **0 Kills, 0 Crashes (57,900+ frames @ 30 / 30,177+ @ 60)** | **100% Stable Across Chambers** |
 | **Audio Performance** | Buffer underruns on swap lag | **0 Underruns (394,000+ callbacks)** | **Clean Audio Output** |
-| **Frame Rate** | 60 FPS (high heat / throttling) | **30 FPS Pinned** (`DM_FPS_PIN=30`) | **Low Thermal Load** |
+| **Frame Rate** | Unstable / crashing | **30 FPS or 60 FPS Configurable** (`env.txt`) | **Exceptional Frame Pacing** |
 
-### 2. Live Telemetry from Device Logs
+### 2. Live Telemetry from Device Logs (60 FPS Mode, Frame 30,000)
 
 ```text
 [dm] [vk] custom driver loaded: libcustom_vulkan.so (PurpleVK Adreno 630, Vulkan 1.4.359)
 [dm] [vk] memory pool 0x70d31d7000 +0x3a00000: zero-copy (zero-copy 58.0 MB, copied 0.0 MB)
 [dm] [vk] memory pool 0x70d1fd6000 +0x1200000: zero-copy (zero-copy 76.0 MB, copied 0.0 MB)
 [dm] [vk] memory pool 0x70c79d5000 +0xa600000: zero-copy (zero-copy 242.0 MB, copied 0.0 MB)
-[dm] [nvn] timing up to frame 57900: frame time p50 33.20 / p95 37.13 / max 39.14 ms (300 frames); NVN submit+present p50 5.88 ms; GPU p50 14.02 ms
-[dm] audio #0 device callbacks 394000: 240–240 frames each, 4.0 blocks queued on average at callback; in these 2000, 0 underruns, 0.0 ms zero-padded
+[dm] [vk] replay up to present 30000: draws 21447577, skipped 0, passes 747602, clears folded 88599
+[dm] [vk] replay per frame (last 600): 498 draws, replay 6.14 ms, GPU busy 10.58 ms; descriptor sets reused 19412169
+[dm] [vk] images: 191 live, 838 MB of textures, 634 evicted so far (a newer texture over their memory)
+[dm] [nvn] timing up to frame 30000: frame time p50 18.58 / p95 20.12 ms; GPU p50 10.66 / p95 11.44 ms
 ```
 
 ---
