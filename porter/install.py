@@ -23,7 +23,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False):
         say(f'device: {model or dev} ({dev}), GPU {adb.gpu() or "unknown"}')
         if 'bcn' in man.get('requires', []):   # the profile's requires: BC-compressed textures
             bc = adb.bc_textures()
-            if bc is False: raise BuildError(f'{man["name"]} needs BC-compressed textures, which this device\'s GPU ({adb.gpu()}) cannot read')
+            if bc is False: say(f'[RED] {adb.gpu() or "this device\'s GPU"} has no hardware BC texture compression: {man["name"]} will decode BCn textures on the CPU')
             if bc is None: say(f'[RED] {man["name"]} needs BC-compressed textures; whether this GPU ({adb.gpu() or "unknown"}) reads them is not known')
         free = adb.free_bytes()
         files = datapack.files_folder(man['package'])

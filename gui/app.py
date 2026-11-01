@@ -68,6 +68,10 @@ class PortTab(QWidget):
         self.language = QComboBox()
         for code, name in LANGUAGES: self.language.addItem(name, code)
         self.out = QLineEdit(); self.out.setPlaceholderText('the game folder')
+        self.driver = QLineEdit(); self.driver.setPlaceholderText('the device\'s own driver (or pick a Turnip / AdrenoTools .zip or .so)')
+        self.driver.setToolTip('Optional custom Qualcomm Adreno Vulkan driver (an AdrenoTools / Turnip .zip, .adpkg, or .so) to bundle in the app.\n'
+                               'Useful on older Adreno 6xx devices whose stock Vulkan 1.1 driver lacks required features.\n'
+                               'Leave empty to use the device\'s built-in Vulkan driver.')
         self.install = QCheckBox('Install on the device when done')
         self.device = QComboBox(); self.device.setMinimumWidth(260)
         refresh = QPushButton('Refresh'); refresh.clicked.connect(self.refresh_devices)
@@ -91,7 +95,8 @@ class PortTab(QWidget):
                              'Auto: 8 GB for a game version the profile was not tested with, none for a tested one.\n'
                              'Raise it (16, 24 …) if the game still runs out. It uses no memory and does not change the speed.')
         f.addRow('App name', self.app_name); f.addRow('Game language', self.language)
-        f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.replace_signer)
+        f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
+        f.addRow('Device', dev); f.addRow('', self.replace_signer)
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
         f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.debug); f.addRow('', self.experimental)
         v.addWidget(o)
@@ -127,6 +132,11 @@ class PortTab(QWidget):
     def pick_out(self):
         d = QFileDialog.getExistingDirectory(self, 'Output folder', self.out.text() or self.folder.text() or str(Path.home()))
         if d: self.out.setText(d)
+
+    def pick_driver(self):
+        p, _ = QFileDialog.getOpenFileName(self, 'Custom Vulkan driver', self.driver.text() or self.folder.text() or str(Path.home()),
+                                           'Driver packages (*.zip *.adpkg *.so);;All files (*)')
+        if p: self.driver.setText(p)
 
     def inspect(self):
         d = self.folder.text().strip()
@@ -179,6 +189,7 @@ class PortTab(QWidget):
         if self.app_name.text().strip(): args += ['--app-name', self.app_name.text().strip()]
         if self.language.currentData(): args += ['--language', self.language.currentData()]
         if self.out.text().strip(): args += ['--out', self.out.text().strip()]
+        if self.driver.text().strip(): args += ['--driver', self.driver.text().strip()]
         if self.install.isChecked():
             args.append('--install')
             if self.device.currentData(): args += ['--device', self.device.currentData()]

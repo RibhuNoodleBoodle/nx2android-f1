@@ -3,7 +3,7 @@
 nx2android ports your own Nintendo Switch games to Android. This folder is the whole app: there is nothing to install with pip, and you need no programming. You need:
 
 - a Windows PC, or a Mac with Apple silicon (M1 or later), with about 30 GB free (the tools take 4 GB, a port about twice the game's size);
-- an Android device whose GPU is an **Adreno** (Snapdragon) or **Xclipse** (Exynos 2200 and later). Mali and PowerVR GPUs cannot run these games;
+- an Android device whose GPU is an **Adreno** (Snapdragon) or **Xclipse** (Exynos 2200 and later). GPUs without hardware BC texture compression decode BC1–BC7 textures on the CPU. Older Adreno 6xx devices whose stock Vulkan driver lacks Vulkan 1.3 features can bundle a custom Mesa Turnip driver;
 - the game's files dumped from your own Switch (the base game NSP or XCI, its update and DLC, in one folder) and your **`prod.keys`** from the same Switch. The tool reads NSP and XCI files, and NSZ and XCZ files, which it decompresses while it ports (they need that much more free space for a while).
 
 ## 1. Start the app
@@ -28,8 +28,9 @@ A few antivirus engines may flag `nx2android.exe` (on VirusTotal, 3 of 69 flagge
 ## 3. Port tab
 
 1. Choose the game's folder. The card under it says which game it found and whether it can be ported: the **Games** tab lists the supported ones.
-2. Click **Port**. The first port of a game takes a while: extraction, rewriting the game's code, translating its shaders (2 to 6 minutes on a fast 20-thread PC with an SSD, much longer on a slow one or a hard disk). Later ports reuse what has not changed.
-3. The APK and the game's data folder (`<Game>-data`) appear in the game's folder. **Open output folder** shows them.
+2. Older Adreno 6xx devices (Snapdragon 845 / 855 / 865): pick an AdrenoTools / Mesa Turnip driver package (`.zip` or `.so`) in the **Vulkan driver** picker (`--driver <file>`). The APK bundles the driver and redirects `libvulkan.so` to it, upgrading the device to Vulkan 1.3 with dynamic rendering and timeline semaphores. If the custom driver fails or hard-crashes, the app falls back to the device's system Vulkan driver automatically (or set `DM_VK_SYSTEM_DRIVER=1` in `env.txt` to bypass it).
+3. Click **Port**. The first port of a game takes a while: extraction, rewriting the game's code, translating its shaders (2 to 6 minutes on a fast 20-thread PC with an SSD, much longer on a slow one or a hard disk). Later ports reuse what has not changed.
+4. The APK and the game's data folder (`<Game>-data`) appear in the game's folder. **Open output folder** shows them.
 
 ## 4. Put it on the device
 
