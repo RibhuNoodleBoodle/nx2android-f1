@@ -491,7 +491,7 @@ static VkQueryPool g_tsq; uint64_t g_gpu_ns;
 // the size holds steady
 enum { CQ = 64 };
 static VkQueryPool g_cq;
-#define SCRATCH_BLOCK (8u << 20)
+#define SCRATCH_BLOCK (2u << 20)
 typedef struct { VkBuffer b; VkDeviceMemory m; uint8_t *p; VkDeviceSize size, used; } scratch_blk;
 typedef struct { int kind; void *a; void *b; } dfree_t;   // 0 buffer+memory, 1 image+memory, 2 view
 typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t addr; uint32_t type; int q; } post_op;   // q: a timestamp counter's query in g_cq, or -1
