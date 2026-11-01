@@ -598,6 +598,7 @@ static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last 
         else if (d->kind == 3) vkDestroyBufferView(V.dev, (VkBufferView)d->a, NULL);
     }
     s->ndf = 0;
+    vk_imgblk_sweep();
     for (int i = 0; i < s->nblk; i++) s->blk[i].used = 0;
     for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(V.dev, s->dp[i], 0);
     s->dp_cur = 0; s->dp_counted = -1;
@@ -680,12 +681,17 @@ static void df_add(int kind, void *a, void *b) {
 // ran towards the kernel's per-process mapping limit (Xenoblade Chronicles 3: about 9,400 driver mappings in its first area, 2,216 of them 172 KB). Images up to
 // IMG_SLOT_MAX take a slot of a block (64 slots, 2 MB to IMG_BLOCK bytes), in size classes 2^(k/2) x 4 KB apart (a slot is at most 41% larger than the image); larger ones, or
 // ones that need more than 4 KB alignment, get memory of their own
-enum { IMG_CLASSES = 18, IMG_BLOCK = 32 << 20 };
+enum { IMG_CLASSES = 18, IMG_BLOCK_FALLBACK = 4 << 20 };
 #define IMG_SLOT_MAX ((VkDeviceSize)2 << 20)
 typedef struct imgblk { VkDeviceMemory m; uint32_t type, cls, nslot, nfree; uint64_t bits[128]; struct imgblk *next; } imgblk;   // bits: 1 = slot free
 typedef struct { imgblk *b; uint32_t slot; } imgsub;
 static imgblk *g_imgblk[IMG_CLASSES]; static pthread_mutex_t g_imgblk_mu = PTHREAD_MUTEX_INITIALIZER;
 static VkDeviceSize img_class_size(int c) { return (c & 1 ? 6144ull : 4096ull) << (c >> 1); }   // 4K, 6K, 8K, 12K, 16K, 24K, ... 2M
+static inline VkDeviceSize img_block_max(void) {
+    static VkDeviceSize sz = 0;
+    if (!sz) { const char *e = getenv("DM_VK_IMG_BLOCK_MB"); sz = e && atoi(e) > 0 ? (VkDeviceSize)atoi(e) << 20 : (VkDeviceSize)IMG_BLOCK_FALLBACK; }
+    return sz;
+}
 VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, VkDeviceSize *off, void **sub) {
     *off = 0; *sub = NULL;
     int c = 0; while (c < IMG_CLASSES && img_class_size(c) < req->size) c++;
@@ -696,7 +702,11 @@ VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, V
     pthread_mutex_lock(&g_imgblk_mu);
     imgblk *b = g_imgblk[c]; while (b && (b->type != type || !b->nfree)) b = b->next;
     if (!b) {
-        b = calloc(1, sizeof *b); b->type = type; b->cls = (uint32_t)c; VkDeviceSize bs = img_class_size(c) * 64; if (bs < (2 << 20)) bs = 2 << 20; if (bs > IMG_BLOCK) bs = IMG_BLOCK; b->nslot = (uint32_t)(bs / img_class_size(c));   // 64 slots, 2 MB to 32 MB
+        b = calloc(1, sizeof *b); b->type = type; b->cls = (uint32_t)c;
+        VkDeviceSize blk_max = img_block_max();
+        VkDeviceSize bs = img_class_size(c) * 64; if (bs < (2 << 20)) bs = 2 << 20; if (bs > blk_max) bs = blk_max;
+        if (bs < img_class_size(c)) bs = img_class_size(c);
+        b->nslot = (uint32_t)(bs / img_class_size(c));
         VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, (VkDeviceSize)b->nslot * img_class_size(c), type};
         if (vkAllocateMemory(V.dev, &ai, NULL, &b->m)) { pthread_mutex_unlock(&g_imgblk_mu); free(b); return VK_NULL_HANDLE; }
         for (uint32_t i = 0; i < b->nslot; i++) b->bits[i >> 6] |= 1ull << (i & 63);
@@ -708,8 +718,39 @@ VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, V
     imgsub *s = malloc(sizeof *s); s->b = b; s->slot = i; *sub = s; *off = (VkDeviceSize)i * img_class_size(c);
     return b->m;
 }
-static void img_sub_free(imgsub *s) {   // the slot is free again; blocks are kept (the next images of the class take them)
-    pthread_mutex_lock(&g_imgblk_mu); s->b->bits[s->slot >> 6] |= 1ull << (s->slot & 63); s->b->nfree++; pthread_mutex_unlock(&g_imgblk_mu); free(s);
+static void img_sub_free(imgsub *s) {   // the slot is free again; excess empty blocks are returned to the driver
+    pthread_mutex_lock(&g_imgblk_mu);
+    imgblk *b = s->b;
+    b->bits[s->slot >> 6] |= 1ull << (s->slot & 63);
+    b->nfree++;
+    if (b->nfree == b->nslot && g_imgblk[b->cls] && g_imgblk[b->cls]->next) {
+        imgblk **pp = &g_imgblk[b->cls];
+        while (*pp && *pp != b) pp = &(*pp)->next;
+        if (*pp == b) {
+            *pp = b->next;
+            vkFreeMemory(V.dev, b->m, NULL);
+            free(b);
+        }
+    }
+    pthread_mutex_unlock(&g_imgblk_mu);
+    free(s);
+}
+void vk_imgblk_sweep(void) {
+    pthread_mutex_lock(&g_imgblk_mu);
+    for (int c = 0; c < IMG_CLASSES; c++) {
+        imgblk **pp = &g_imgblk[c];
+        while (*pp) {
+            imgblk *b = *pp;
+            if (b->nfree == b->nslot) {
+                *pp = b->next;
+                vkFreeMemory(V.dev, b->m, NULL);
+                free(b);
+            } else {
+                pp = &b->next;
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_imgblk_mu);
 }
 void vk_defer_free_buffer(VkBuffer b, VkDeviceMemory m) { df_add(0, (void *)b, (void *)m); }
 void vk_defer_free_image_sub(VkImage i, void *sub) { df_add(4, (void *)i, sub); }

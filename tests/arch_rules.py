@@ -3,7 +3,11 @@ import ast, re, subprocess, sys
 from pathlib import Path
 
 R = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent).resolve()
-files = subprocess.run(['git', '-C', str(R), 'ls-files'], capture_output=True, text=True, check=True).stdout.splitlines()
+res = subprocess.run(['git', '-C', str(R), 'ls-files'], capture_output=True, text=True)
+if res.returncode == 0 and res.stdout.strip():
+    files = res.stdout.splitlines()
+else:
+    files = [str(p.relative_to(R)).replace('\\', '/') for p in R.rglob('*') if p.is_file() and not any(part in ('.git', 'out', 'build', '.venv', '__pycache__') for part in p.parts)]
 fails, notes = [], []
 def check(name, ok, detail=''):
     print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f": {detail}" if detail else ''))

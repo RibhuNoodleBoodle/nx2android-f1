@@ -74,6 +74,7 @@ void vk_defer_free_buffer(VkBuffer b, VkDeviceMemory m);   // destroyed once the
 void vk_defer_free_image(VkImage i, VkDeviceMemory m);
 VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, VkDeviceSize *off, void **sub);   // NULL on failure; *sub: a slot of a shared block, or NULL (memory of its own)
 void vk_defer_free_image_sub(VkImage i, void *sub);
+void vk_imgblk_sweep(void);
 void vk_defer_free_view(VkImageView v);
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l);    // from this submission's descriptor pools
 uint64_t vk_fence_done(void);   // the highest submission fence the GPU has completed

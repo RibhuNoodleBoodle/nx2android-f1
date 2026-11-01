@@ -1,0 +1,182 @@
+ROLE: CLAUDE OPUS 5.5 (MEDIUM REASONING)
+MODE: READ-ONLY CODEBASE INVESTIGATOR, ARCHITECT, AND PROMPT-FILE AUTHOR
+REPOSITORY: https://github.com/shirai91/nx2android
+IMPLEMENTATION WORKER: GEMINI FLASH (HIGH REASONING)
+PRIMARY OBJECTIVE: Evaluate the feasibility of user-selectable/custom GPU drivers in nx2android, using Purple Turnip as the primary real-world compatibility candidate; identify exact changes needed (if feasible), and WRITE executable-by-a-worker, sequential implementation instruction files to disk.
+
+==============================
+NON-NEGOTIABLE DIVISION OF LABOR
+==============================
+YOU (CLAUDE OPUS):
+- Inspect the LOCAL repository thoroughly and independently.
+- Determine what is currently implemented and what is missing or incorrect.
+- Evaluate technically realistic options and their consequences. Explicitly investigate Purple Turnip driver packages as the prioritized reference case (but do not treat their advertised support as proven nx2android compatibility).
+- Design a precise, evidence-based implementation plan for Gemini Flash (High).
+- CREATE real UTF-8 text files inside <REPOSITORY_ROOT>/gemini_flash/ named:
+    Gemini_Step_1.txt
+    Gemini_Step_2.txt
+    Gemini_Step_3.txt
+    ...
+  Number them consecutively, in dependency order, with NO missing numbers.
+- Re-open those files after writing and verify that their contents exist and are usable.
+
+YOU MUST NOT:
+- Modify, create, delete, rename, or reformat ANY application source, build/configuration file, existing documentation, test file, or resource file.
+- Implement even a small fix, refactor, prototype, proof of concept, patch, stub, or TODO in application code.
+- Compile/build/port/install/run the application, run device commands, alter ADB settings, install packages, download toolchains, or perform tests that mutate the workspace.
+- Change dependencies, submodules, Git branches, Git index, commits, tags, or remote configuration.
+- Write instructions solely in the chat response or an internal planning tool. You MUST actually create the .txt files on disk.
+- Invent functions, files, limitations, test results, device support, upstream API behavior, or implementation feasibility.
+
+THE ONLY PERMITTED FILESYSTEM WRITES are creating the gemini_flash/ directory if absent, and creating/replacing the intended Gemini_Step_N.txt instruction files INSIDE that directory. Do not delete unrelated existing files there; inspect before replacing any existing Gemini_Step_N.txt and preserve useful prior instructions when possible. No other files may be written. If file-writing tools are unavailable, report this explicitly; do not falsely state that files were exported.
+
+==============================
+1. LOCATE AND UNDERSTAND THE CODEBASE
+==============================
+- Treat the current working directory as the intended local checkout if it contains the repo. Otherwise identify the actual checkout safely. Do not assume that the GitHub URL is a local path, and do not clone without permission.
+- Record the repository root, current branch, HEAD commit, and initial `git status --short` for your own final verification. Do not modify Git state.
+- First read and comply with the repository's CLAUDE.md and all relevant project instructions in .claude/skills/ (including nx2android-dev and switch-android-port, if present), README.md, RESEARCH.md, docs/ARCHITECTURE.md, docs/DEVELOPMENT_GUIDE.md, and relevant Android packaging/install guides. Treat these as design constraints, not as permission to edit code.
+- Follow the actual source, not outdated docs. Distinguish what the source proves from what documentation claims.
+- Trace the major layers: GUI (`gui/`), port pipeline (`porter/`), native core (`nxnative/dm/`), Android runtime/Vulkan backend (`nxnative/dm/android/`), APK generation and packaging (`packaging/`, Android APK scripts), and tests.
+- Locate and read definitions/call sites for Vulkan loading, initialization, instance/device creation, extension/feature enumeration, physical-device selection, memory, pipelines, texture formats, shader translation, surface/swapchain lifecycle, driver error handling, settings, logging, APK contents, and native library loading.
+- Search for existing custom-driver loading, Turnip, Mesa, Adreno, Vulkan loader, ICD, dlopen/dlsym, vkGetInstanceProcAddr, vkGetDeviceProcAddr, libvulkan.so, libadrenotools, graphics-driver preferences, and relevant JNI/NDK interactions. Search results are leads only; inspect their callers and consumers.
+- Locate existing feature checks and fallbacks for Vulkan 1.1 devices, timeline semaphores, BC-compressed textures, and any GPU restrictions. In particular, VERIFY from code whether/how the v0.2.0 compatibility changes affect the proposed driver design.
+- Identify project-specific restrictions around core vs game profiles: propose common functionality in the shared Android core/configuration, not duplicated per-game branches, unless actual code architecture requires something else.
+- Look at existing tests and CI to determine safe verification methods for the worker without running them yourself.
+
+==============================
+2. DEFINE EXACTLY WHAT 'CUSTOM DRIVERS' COULD MEAN
+==============================
+Investigate the following separately. Do NOT conflate them:
+A. User-selectable ANDROID USER-SPACE VULKAN drivers (for example, compatible Mesa Turnip builds on supported Qualcomm Adreno GPUs).
+B. A bundled or separately supplied compatible user-space Vulkan driver selected per game or per generated APK.
+C. A driver loaded through an Android-native mechanism, if supported (for example, libadrenotools or another well-documented method); do not assume such integration is appropriate without examining API compatibility, licensing, and the project's execution model.
+D. Android's standard Vulkan loader / system driver selection and any debug-layer or external-driver mechanisms, clearly distinguishing layers from ICDs/drivers.
+E. Unsupported ambitions such as installing/replacing kernel GPU drivers from an unprivileged APK; explain precisely when root, OS privileges, matching kernel components, or firmware would be needed.
+
+Do not assume rootless custom Vulkan driver loading is possible on every Android version, GPU, or runtime. Specifically evaluate:
+- ARM64 ABI and Android API/NDK requirements.
+- Vulkan loader and dispatch mechanism; function-pointer ownership and proc-address resolution; whether a custom loader needs to handle all instance/device function resolution and extensions.
+- Android linker namespaces and permitted native-library paths; library dependency chains, versioned symbols, and whether arbitrary driver shared objects can be loaded from application storage on relevant OS versions.
+- Correctness across activity lifecycle, Surface/ANativeWindow, swapchain creation and recreation, native memory sharing, presentation, synchronization, and app sandboxing.
+- Vulkan API level, required extensions/features, descriptor/rendering capabilities, shader capabilities, texture compression, memory allocation, and possible compatibility workarounds.
+- Snapdragon/Adreno feasibility versus Xclipse, Mali, PowerVR and any other GPU families; distinguish driver-loading feasibility from actual game rendering support.
+- Security risks of arbitrary .so execution, unsafe driver archives, path traversal, dependency substitution, tampered libraries, crashes, denial of service, integrity checks and untrusted inputs.
+- Binary distribution and licensing (Mesa, third-party loaders and upstream licenses); distinguish 'can load an externally supplied driver' from 'can legally package and redistribute a specific binary'. Do not tell Gemini to obtain proprietary or unauthorized binaries.
+- Risks to existing supported games and devices; graceful compatibility fallback and recovery when a selected custom driver cannot load or initialize.
+
+Remember nx2android is a game-porting/compatibility project, NOT a conventional multi-game Android emulator. Evaluate how any driver-selection feature must survive its generated per-game APK pipeline. Verify this from code before designing the integration.
+
+==============================
+2A. MANDATORY REAL-WORLD TARGET: PURPLE TURNIP
+==============================
+PRIMARY REFERENCE:
+  Project: https://github.com/MrPurple666/purple-turnip
+  Official project releases: https://github.com/MrPurple666/purple-turnip/releases
+  Rootless Adreno driver loading reference: https://github.com/bylaws/libadrenotools
+  Secondary app behavior reference: https://www.ppsspp.org/docs/reference/custom-drivers/
+
+WHY THIS IS IMPORTANT:
+- The user specifically nominated MrPurple666's Purple Turnip as a test driver for nx2android. Include it explicitly in the feasibility investigation and in Gemini Flash's conditional verification plan; do not substitute a different driver as the sole benchmark.
+- The Purple Turnip GitHub repository's main code tree currently appears to contain only a very short README. The usable driver distributions are published under GitHub Releases. DO NOT mistake the lack of source files in that repo for an absence of release assets, and DO NOT treat its binaries as the nx2android source code.
+- At the time this prompt was prepared (2026-11-01), a published T30 release described itself as Turnip/Mesa 26.3.0-devel, Vulkan 1.4.359, unified A6xx/A7xx/A8xx and Android 11+. Its release notes indicate reduced/partial Adreno 710/720 support. These are release-author assertions and must be re-checked against actual driver package metadata and the target device. Other versions can differ substantially.
+- Releases use driver assets labeled with `.adpkg` (some distributions/archives may be named differently). Do not assume `.adpkg` is a ZIP, APK, raw `.so`, or universally supported format. Identify its actual magic bytes, layout, driver shared libraries, metadata, architecture, dependency chain and expected importer format only if a sample package is already available or can be inspected via non-mutating metadata tools. Otherwise turn this into a Gemini Flash investigation step with an explicit stop condition.
+
+ANALYSIS REQUIREMENTS:
+1. Inspect project release notes and available metadata for Purple Turnip T30 and at least one older version (e.g., T29/T28) to understand compatibility and regression risks. Recheck version/date; do not assume the snapshot above remains the latest.
+2. Determine how a user-obtained Purple Turnip package could be selected and delivered to nx2android's GENERATED Android APK. Investigate both per-game APK prebundling (explicit opt-in) and runtime user import/selection; select a path only after proving Android storage, ABI, linker and packaging feasibility. No downloading or bundling driver binaries in Claude's phase.
+3. Determine whether libadrenotools' documented APIs match the actual runtime's Vulkan initialization and function-resolution path. Read its headers, example app and license as needed. Specify the earliest safe initialization point and explain why loading too late would fail. Do not presume successful integration merely because PPSSPP supports it.
+4. Contrast Android's system Vulkan driver with Purple Turnip and define an evidence-backed mechanism for displaying which driver REALLY initialized (via Vulkan physical-device properties/driver properties where available, supplemented by relevant loader logs). A mere UI selection is not proof of loading.
+5. Make the driver package importer conditional on validated package contents and clear trust boundaries. Specify safe file selection, format validation, path traversal prevention, ABI checks, missing dependency detection, checksum/provenance recording where possible, user warnings for untrusted native libraries, and recovery on failure. Do not prescribe an extension whitelist alone as secure validation.
+6. Identify support constraints by GPU generation and Android OS/API: particularly A6xx vs A7xx vs A8xx, and specific regression warnings for Adreno 710/720. Recognize that promoted Vulkan-version claims do not guarantee conformant extension support, working BC texture formats, or nx2android shader/presentation correctness.
+7. Design a conditional Gemini test matrix that includes baseline system driver vs Purple Turnip T30 (and optionally an older stable Purple Turnip build), compatible Snapdragon/Adreno target hardware, startup/device selection, rendering, shader compilation, BC textures, gameplay, frame pacing, crash recovery, and logs. For other GPU vendors, show the expected safe rejection/fallback behavior rather than promising Turnip will work.
+8. A clear decision gate is required BEFORE any Gemini Flash implementation step that handles Purple Turnip: the chosen distribution is obtainable legitimately, its format and dependencies are understood, the device is eligible, and the proposed loading method is demonstrably compatible with nx2android's Vulkan and native-library lifecycle. If these conditions cannot be established by reading code and docs, instruct Flash to perform a bounded proof-of-feasibility investigation before implementing imports/UI.
+9. Do not redistribute Purple Turnip binary artifacts, claim broad GPU compatibility, run unofficial installers, replace kernel-level drivers, or direct the worker to use root privileges. The baseline system driver must always remain a usable recovery option.
+10. Explicitly carry these findings and the named Purple Turnip URLs into the relevant exported Gemini_Step_N.txt files. Ensure the worker receives an actionable verification plan, not merely a passing mention of the project.
+
+==============================
+3. REACH A GROUNDED FEASIBILITY VERDICT
+==============================
+Before creating implementation steps, decide from inspected code and credible upstream documentation:
+- FEASIBLE with current architecture;
+- FEASIBLE ONLY WITH A DEFINED ARCHITECTURAL CHANGE;
+- POSSIBLE BUT UNVERIFIED / DEVICE-DEPENDENT; or
+- INFEASIBLE for the requested mechanism.
+
+For each candidate approach, explain why, with file paths, symbols and dependencies. Rank the options based on reliability, minimal changes, backward compatibility, portability and maintainability. Choose ONE preferred architecture if evidence justifies one; otherwise specify a gated investigation to resolve unknowns before implementation.
+
+Never promise that Turnip supports a particular GPU, Android version, game, Vulkan extension, or texture-compression feature unless verified. A custom GPU driver cannot be assumed to solve game-specific NVN translation bugs, shader correctness, or missing features.
+
+==============================
+4. SPECIFY ANY REQUIRED MODIFICATIONS
+==============================
+Identify precise, minimal changes only where justified by the code. Evaluate possible work in:
+- Backend abstractions / centralized Vulkan loader and function dispatch.
+- Driver discovery and selection, saved settings, settings validation, defaults and per-game behavior.
+- Native shared-library extraction/loading and handling of transitive dependencies, Android namespace restrictions and manifest/APK layout.
+- GUI and CLI exposure (if a user-facing selection is warranted); keep feature parity where appropriate.
+- End-to-end propagation through the porter pipeline, Android native host build, generated APK/assets and runtime.
+- Hardware-capability queries, feature gating, logs and intelligible diagnostics that identify actual active GPU/driver without exposing sensitive data.
+- Safe automatic fallback to the working system driver when loading/initializing a selected driver fails; recovery from settings that otherwise cause startup crashes.
+- Secure handling of user-supplied driver packages and version compatibility, with no unjustified use of privileged APIs or root.
+- Targeted unit/integration tests, device-validation matrix, reproducible testing commands, packaging tests and rollback paths, explicitly including a conditional Purple Turnip T30 vs system-driver comparison on compatible Adreno hardware.
+
+Avoid unnecessary project-wide refactoring, a generalized driver marketplace, automatic network downloads, magical GPU translation promises, or speculative feature expansions.
+
+If no custom-driver scheme is actually viable, do NOT produce pretend implementation steps. Create only evidence-based investigation, blocker-resolution, or alternative-approach steps with explicit stop conditions; clearly label the feature as blocked until conditions are met.
+
+==============================
+5. ACTUALLY EXPORT GEMINI FLASH INSTRUCTIONS
+==============================
+This section is REQUIRED and is the primary deliverable. DO NOT skip it.
+
+OUTPUT LOCATION:
+  <EXACT_LOCAL_REPOSITORY_ROOT>/gemini_flash/
+
+OUTPUT FILENAMES:
+  Gemini_Step_1.txt
+  Gemini_Step_2.txt
+  ...
+  Gemini_Step_N.txt
+
+Rules:
+1. Create the folder if it does not exist. Use tools with real filesystem write access, not just a proposed command in your answer.
+2. Create as many steps as genuinely needed based on discovered dependencies. Prefer small, independently testable work packages, but do not invent extra steps just to fill a count.
+3. Each file must be a complete, standalone prompt addressed directly to "Gemini Flash (High Reasoning), implementation worker." A new agent should be able to open one file and know its exact task.
+4. The FIRST file must include the feasibility verdict, the overall approved design, key architectural constraints, repository state/commit analyzed, initial assumptions and uncertainties, the Purple Turnip candidate and its release provenance/limitations, and the sequence/dependencies of all worker steps. If the conclusion is BLOCKED, make that fact the first line and supply diagnostic/decision gates instead of a false implementation order.
+5. Subsequent files must follow the dependency order from architecture/setup to implementation to integration/testing/documentation only when those are warranted. Separate preparatory architecture changes from later GUI/CLI/package wiring and runtime validation.
+6. For every step, explicitly provide:
+   - Objective and concrete expected behavior.
+   - Why this change is needed, with evidence from the inspected code.
+   - Exact existing files/directories to inspect or change (plus exact source symbols/functions/classes where verified).
+   - Preconditions and dependencies on earlier steps.
+   - Exact changes to implement, in logical order, and any API/data-flow contracts between modules.
+   - Files or modules that MUST remain unchanged and preservation of existing behavior.
+   - Edge cases, failure modes, driver compatibility constraints, security and fallback behavior.
+   - Verification instructions: actual repo-appropriate commands, test names, manual device tests, expected results and negative tests where these can be established. Mark unverified commands as examples or discovery tasks; never fabricate passing results.
+   - Acceptance criteria and objective 'done' conditions.
+   - Rollback/revert strategy, bounded to changes in that step.
+   - What evidence Gemini must report (files changed, build/test logs, actual driver selected, open issues).
+7. Instruct Gemini to perform ONLY its current step, inspect the repo before changing anything, maintain existing design conventions, use its high reasoning budget for tricky ABI/graphics problems, avoid unrelated edits, and finish with a worker report before proceeding to the next numbered file.
+8. Each step must identify whether it is an IMPLEMENTATION, INVESTIGATION, or VERIFICATION step. Never hide an architectural blocker inside an implementation step. Give Purple Turnip package inspection/import verification its own bounded step if the package format, loader API or target device remains unverified.
+9. Use plain UTF-8 text with normal line endings for the host OS. No markdown-only output in chat as a substitute, no placeholders such as '[insert code here]', no fake paths, no unspecified implementation instructions like 'fix the driver support'.
+10. If earlier Gemini_Step_N.txt files exist, read them and avoid silent loss of unrelated useful material. Keep the final numbered set consistent and consecutive. Do not delete files whose preservation you cannot justify; report conflicts instead.
+11. Verify physically: list the directory, read every new step file back, check names 1 through N without gaps, confirm every file is nonempty and includes objective, target, implementation/diagnostic instructions, checks, and acceptance criteria.
+12. Verify that no application file was modified. Compare `git status --short` before/after and, if appropriate, inspect `git diff` / `git diff --cached`. The ONLY expected new/modified paths are your intentionally authored prompt files under gemini_flash/. Do not stage them or make commits.
+
+If your current environment has no local checkout, do not fabricate repo-specific source paths or recommend unverified changes. Search only safe, accessible locations; if still absent, explain the blocker and, if a valid workspace exists, write a single truthful Gemini_Step_1.txt requesting source access/analysis as its first prerequisite. Do not silently substitute a remote version for the actual checked-out code.
+
+==============================
+6. FINAL RESPONSE TO USER
+==============================
+Once the actual files are saved and verified, your chat response must be SHORT and factual:
+- Local repo root and analyzed commit.
+- Feasibility verdict (including any significant caveat).
+- Exact path to gemini_flash/.
+- Ordered filenames actually created, each with a one-line objective.
+- Explicit confirmation that you performed NO SOURCE-CODE EDITS and that all numbered text files were checked on disk.
+- Any blocking unknowns or prerequisites for Gemini Flash.
+
+DO NOT paste the entire instruction set into chat, do not implement the plan yourself, and do not say "done" unless the files really exist.
+
+YOUR JOB ENDS IMMEDIATELY AFTER ANALYSIS, PROMPT-FILE EXPORT, AND VERIFICATION. GEMINI FLASH IS THE ONLY IMPLEMENTATION AGENT.

@@ -288,7 +288,7 @@ extern uint64_t g_tex_frame;   // presents so far, for the packaged textures' la
 // stayed: Xenoblade Chronicles 3 streams its field textures through pools that live for good, the device's GPU memory grew by about 470 MB a minute while walking (6.3 GB
 // after 20 minutes) and Android's low-memory killer ended the game. A new image takes over: the images of the same pool over its memory that were not looked up in the
 // last EVICT_KEEP presents go (their memory now holds another texture; one drawn again is made and filled again). Called with g_img_mu held
-enum { EVICT_KEEP = 60 };
+enum { EVICT_KEEP = 10 };
 static uint64_t g_img_n, g_img_bytes, g_img_evicted;   // live images and their bytes, images evicted so far (vk_tex_sweep's line)
 static void img_drop(vkimg_t *im) { vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
 static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
@@ -298,6 +298,76 @@ static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
         memcpy(&ks[n++], g_by_key.keys + (size_t)i * g_by_key.klen, sizeof(akey));
     }
     for (int j = 0; j < n; j++) { vkimg_t *o = nvn_hm_get(&g_by_key, &ks[j]); if (!o) continue; nvn_hm_del(&g_by_key, &ks[j]); img_drop(o); g_img_evicted++; }
+}
+
+// DM_VK_TEX_MAX_MB (start-up / env): maximum texture cache budget in MB (default 280 MB on mobile).
+// DM_VK_TEX_KEEP_FRAMES (start-up / env): textures not looked up for this many presents are evicted as idle (default 300 = ~10s at 30 fps).
+static uint64_t tex_max_bytes(void) {
+    static uint64_t v = 0;
+    if (!v) { const char *e = getenv("DM_VK_TEX_MAX_MB"); uint64_t mb = e && atoi(e) > 0 ? (uint64_t)atoi(e) : 280; v = mb << 20; }
+    return v;
+}
+static uint64_t tex_idle_frames(void) {
+    static uint64_t v = 0;
+    if (!v) { const char *e = getenv("DM_VK_TEX_KEEP_FRAMES"); v = e && atoi(e) > 0 ? (uint64_t)atoi(e) : 300; }
+    return v;
+}
+typedef struct { uint64_t used; int is_serial; akey k; uint64_t serial; uint64_t size; } tex_evict_t;
+static int tex_evict_cmp(const void *a, const void *b) {
+    uint64_t x = ((const tex_evict_t *)a)->used, y = ((const tex_evict_t *)b)->used;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+static inline int tex_evictable(const vkimg_t *im) {
+    if (!im) return 0;
+    if (g_tex_frame <= im->used || g_tex_frame - im->used < 10) return 0;
+    if (im->packaged || im->pool) return 1;
+    return 0;
+}
+
+// Evict oldest textures (LRU) when allocating a new image would breach the memory budget. Called with g_img_mu held
+static void evict_to_budget(uint64_t target_bytes) {
+    if (g_img_bytes <= target_bytes) return;
+    tex_evict_t *cands = NULL; size_t ncands = 0, cap_cands = 0;
+    for (int m = 0; m < 2; m++) {
+        nvn_hmap *h = m ? &g_by_serial : &g_by_key;
+        for (uint32_t i = 0; i < h->cap; i++) {
+            vkimg_t *im = h->vals[i];
+            if (!tex_evictable(im)) continue;
+            if (ncands == cap_cands) {
+                cap_cands = cap_cands ? cap_cands * 2 : 256;
+                tex_evict_t *nw = realloc(cands, cap_cands * sizeof *cands);
+                if (!nw) break;
+                cands = nw;
+            }
+            tex_evict_t *c = &cands[ncands++];
+            c->used = im->used; c->is_serial = m; c->size = im->size > 0 ? (uint64_t)im->size : 0;
+            if (m) memcpy(&c->serial, h->keys + (size_t)i * h->klen, sizeof(uint64_t));
+            else memcpy(&c->k, h->keys + (size_t)i * h->klen, sizeof(akey));
+        }
+    }
+    if (ncands > 0) {
+        qsort(cands, ncands, sizeof *cands, tex_evict_cmp);
+        uint64_t evict_n = 0, evict_bytes = 0;
+        for (size_t i = 0; i < ncands && g_img_bytes > target_bytes; i++) {
+            tex_evict_t *c = &cands[i];
+            vkimg_t *im = c->is_serial ? nvn_hm_get(&g_by_serial, &c->serial) : nvn_hm_get(&g_by_key, &c->k);
+            if (!tex_evictable(im)) continue;
+            if (c->is_serial) nvn_hm_del(&g_by_serial, &c->serial);
+            else nvn_hm_del(&g_by_key, &c->k);
+            uint64_t sz = im->size > 0 ? (uint64_t)im->size : 0;
+            img_drop(im);
+            g_img_evicted++;
+            evict_n++;
+            evict_bytes += sz;
+        }
+        if (evict_n) {
+            VKLOG("texture budget eviction: evicted %llu textures (%.1f MB), %llu live images remaining (%.1f MB of textures)",
+                  (unsigned long long)evict_n, evict_bytes / 1048576.0,
+                  (unsigned long long)g_img_n, g_img_bytes / 1048576.0);
+            vk_imgblk_sweep();
+        }
+    }
+    free(cands);
 }
 vkimg_t *vk_tex(const tex_t *t) {
     if (!t || !t->serial || t->magic != MAGIC('T', 'E', 'X', 0)) return NULL;
@@ -316,6 +386,9 @@ vkimg_t *vk_tex(const tex_t *t) {
     int fresh = 0;
     if (!im) {
         if (keyed) evict_overlaps(k.pool, t->off, (int64_t)t->L.size);
+        if (g_img_bytes + t->L.size > tex_max_bytes()) {
+            evict_to_budget(tex_max_bytes() * 3 / 4);
+        }
         im = img_new(t, f); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
         im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags; g_img_n++; g_img_bytes += t->L.size;
         if (keyed) { alias_link(im); nvn_hm_put(&g_by_key, &k, im); } else nvn_hm_put(&g_by_serial, &t->serial, im);
@@ -345,10 +418,66 @@ enum { PKG_IDLE = 1800, PKG_KEEP = 60, PKG_RUNS = 8000 };   // about 60 s and 2 
 uint64_t g_tex_frame;
 typedef struct { uint64_t used; vkimg_t *im; } pkg_age;
 static int pkg_age_cmp(const void *a, const void *b) { uint64_t x = ((const pkg_age *)a)->used, y = ((const pkg_age *)b)->used; return x < y ? -1 : x > y; }
+
 void vk_tex_sweep(void) {
-    if (++g_tex_frame % 300) return;
+    g_tex_frame++;
+    uint64_t max_bytes = tex_max_bytes();
+    int over_budget = g_img_bytes > max_bytes;
+    if ((g_tex_frame % 150 != 0) && (!over_budget || g_tex_frame % 30 != 0)) return;
     uint64_t idle = 0, lru = 0, before = nvn_dirty_released();
     pthread_mutex_lock(&g_img_mu);
+
+    // Evict idle / LRU textures to keep GPU memory bounded across chamber and room transitions
+    tex_evict_t *cands = NULL; size_t ncands = 0, cap_cands = 0;
+    uint64_t idle_thresh = tex_idle_frames();
+    uint64_t evict_n = 0, evict_bytes = 0;
+    for (int m = 0; m < 2; m++) {
+        nvn_hmap *h = m ? &g_by_serial : &g_by_key;
+        for (uint32_t i = 0; i < h->cap; i++) {
+            vkimg_t *im = h->vals[i];
+            if (!tex_evictable(im)) continue;
+            if (ncands == cap_cands) {
+                cap_cands = cap_cands ? cap_cands * 2 : 512;
+                tex_evict_t *nw = realloc(cands, cap_cands * sizeof *cands);
+                if (!nw) break;
+                cands = nw;
+            }
+            tex_evict_t *c = &cands[ncands++];
+            c->used = im->used;
+            c->is_serial = m;
+            c->size = im->size > 0 ? (uint64_t)im->size : 0;
+            if (m) memcpy(&c->serial, h->keys + (size_t)i * h->klen, sizeof(uint64_t));
+            else memcpy(&c->k, h->keys + (size_t)i * h->klen, sizeof(akey));
+        }
+    }
+    if (ncands > 0) {
+        qsort(cands, ncands, sizeof *cands, tex_evict_cmp);
+        uint64_t target_bytes = max_bytes * 3 / 4;   // bring down to 75% when budget exceeded
+        for (size_t i = 0; i < ncands; i++) {
+            tex_evict_t *c = &cands[i];
+            int is_idle = (g_tex_frame > c->used && g_tex_frame - c->used >= idle_thresh);
+            int is_over = (g_img_bytes > target_bytes);
+            if (!is_idle && !is_over) continue;
+            vkimg_t *im = c->is_serial ? nvn_hm_get(&g_by_serial, &c->serial) : nvn_hm_get(&g_by_key, &c->k);
+            if (!im || !tex_evictable(im)) continue;
+            if (c->is_serial) nvn_hm_del(&g_by_serial, &c->serial);
+            else nvn_hm_del(&g_by_key, &c->k);
+            uint64_t sz = im->size > 0 ? (uint64_t)im->size : 0;
+            img_drop(im);
+            g_img_evicted++;
+            evict_n++;
+            evict_bytes += sz;
+        }
+    }
+    free(cands);
+    if (evict_n) {
+        if (g_tex_frame % 600 == 0 || over_budget) {
+            VKLOG("texture sweep: evicted %llu idle/LRU textures (%.1f MB), %llu live images remaining (%.1f MB of textures)",
+                  (unsigned long long)evict_n, evict_bytes / 1048576.0,
+                  (unsigned long long)g_img_n, g_img_bytes / 1048576.0);
+        }
+        vk_imgblk_sweep();
+    }
     pkg_age *v = NULL; size_t nv = 0, cap = 0;
     for (int m = 0; m < 2; m++) {
         nvn_hmap *h = m ? &g_by_serial : &g_by_key;
