@@ -13,6 +13,8 @@ from porter.upstream import android_profile, game          # noqa: E402
 if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 NEO = '010043B013C5C000'
+HADES2 = '0100A00019DE0000'
+BLASPHEMOUS2 = '010040801A4C8000'
 
 
 def profile_dir(rows, gid='0100000000AAA000'):
@@ -27,14 +29,14 @@ def profile_dir(rows, gid='0100000000AAA000'):
 class AndroidProfiles(unittest.TestCase):
     def tearDown(self): os.environ.pop('DM_GAMES_DIR', None)
 
-    def test_neo(self):
-        p = profiles.load(NEO)
-        self.assertEqual(p.status, 'playable'); self.assertEqual(p.package, 'org.nx2a.neo'); self.assertTrue(p.landscape)
-        self.assertEqual(p.settings, {'docked': '0', 'overlay': '1', 'rumble': '1'}); self.assertEqual(p.requires, ['bcn'])
+    def test_hades2(self):
+        p = profiles.load(HADES2)
+        self.assertEqual(p.status, 'playable'); self.assertEqual(p.package, 'org.nx2a.hades2'); self.assertTrue(p.landscape)
+        self.assertIn('Xiaomi Poco F1', p.tested)
 
     def test_only_android_profiles_listed(self):
         rows = profiles.all_entries()
-        self.assertIn(NEO, [r.id for r in rows]); self.assertTrue(all(r.android for r in rows))
+        self.assertIn(HADES2, [r.id for r in rows]); self.assertIn(BLASPHEMOUS2, [r.id for r in rows]); self.assertTrue(all(r.android for r in rows))
         self.assertGreater(len(profiles.all_entries(android_only=False)), len(rows))
 
     def test_fps_setting(self):   # the pause menu's Show FPS (front_android.c settings_load fps=)
@@ -58,7 +60,7 @@ class AndroidProfiles(unittest.TestCase):
             with self.assertRaises(android_profile.ProfileError, msg=rows): android_profile.load(d.name)
 
     def test_header_default_layout(self):   # the ergonomic layouts (the themes' design), the tablet's then the phone's, the same controls in each
-        h = android_profile.header(android_profile.load(NEO))
+        h = android_profile.header(android_profile.load(HADES2))
         rx = r'\{(OV_\w+), (-?[\d.]+)f, (-?[\d.]+)f, ([\d.]+)f, ([\d.]+)f, ([\d.]+)f, (\w+), "([^"]*)", "(\w+)"\}'
         tablet, phone = (re.findall(rx, h.split(f'#define DM_AOV_{n}')[1].split('#define')[0]) for n in ('TABLET', 'PHONE'))
         self.assertEqual((len(tablet), len(phone)), (16, 16)); self.assertIn('#define DM_AOV_N 16', h)
@@ -75,7 +77,7 @@ class AndroidProfiles(unittest.TestCase):
         with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('overlay', 'a 0.5 0.5')]).name)
 
     def test_theme_mapping(self):   # porter packs the game's own pack, the ergo pack for a game the table does not name
-        self.assertEqual(android_profile.theme(NEO).name, 'neotwewy'); self.assertEqual(android_profile.theme(NEO.lower()).name, 'neotwewy')
+        self.assertEqual(android_profile.theme(HADES2).name, 'hades2'); self.assertEqual(android_profile.theme(HADES2.lower()).name, 'hades2')
         self.assertEqual(android_profile.theme('0100000000AAA000').name, 'ergo')
         rows = [l.split('\t') for l in (android_profile.THEMES / 'themes.tsv').read_text(encoding='utf-8').splitlines() if l and not l.startswith('#')]
         self.assertEqual(len({r[0] for r in rows}), len(rows))   # one pack per game
@@ -104,7 +106,7 @@ class AndroidProfiles(unittest.TestCase):
     def test_apk_assets(self):   # mkapk.py --asset: the theme's files as assets/overlay/<name>, nothing of the other packs
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_apk_'))
         try:
-            so = t / 'libdmhost.so'; so.write_bytes(b'\x7fELF' + b'\0' * 60); pack = android_profile.theme(NEO)
+            so = t / 'libdmhost.so'; so.write_bytes(b'\x7fELF' + b'\0' * 60); pack = android_profile.theme(HADES2)
             args = [a for f in ('theme.tsv', 'tablet.png', 'phone.png') for a in ('--asset', f'overlay/{f}={pack / f}')]
             import subprocess, zipfile
             subprocess.run([sys.executable, str(REPO / 'nxnative/dm/android/apk/mkapk.py'), str(so), str(t / 'a.apk'), str(t / 'k.json'), '--lib', 'dmhost'] + args,
@@ -124,7 +126,9 @@ class DataPack(unittest.TestCase):
             (t / 'romfs/Data').mkdir(parents=True); (t / 'romfs/Data/a.bin').write_bytes(b'y' * 20)
             (t / 'aoc/1').mkdir(parents=True); (t / 'aoc/1/d.bin').write_bytes(b'z')
             (t / 'shaders.dmsv').write_bytes(b'DMSV')
-            p = profiles.load(NEO)
+            d = profile_dir([('status', 'playable'), ('tested', 'test'), ('package', 'org.nx2a.neo'), ('requires', 'bcn'),
+                             ('setting', 'docked=0'), ('setting', 'overlay=1'), ('setting', 'rumble=1')])
+            p = android_profile.load(d.name)
             man = datapack.build(t / 'out-data', profile=p, version='v196608', display='1.03', patched=t / 'patched', romfs=t / 'romfs', shaders=t / 'shaders.dmsv',
                                  aoc=t / 'aoc', language='ja')
             o = t / 'out-data'

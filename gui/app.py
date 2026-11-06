@@ -68,10 +68,10 @@ class PortTab(QWidget):
         self.language = QComboBox()
         for code, name in LANGUAGES: self.language.addItem(name, code)
         self.out = QLineEdit(); self.out.setPlaceholderText('the game folder')
-        self.driver = QLineEdit(); self.driver.setPlaceholderText('the device\'s own driver (or pick a Turnip / AdrenoTools .zip or .so)')
-        self.driver.setToolTip('Optional custom Qualcomm Adreno Vulkan driver (an AdrenoTools / Turnip .zip, .adpkg, or .so) to bundle in the app.\n'
-                               'Useful on older Adreno 6xx devices whose stock Vulkan 1.1 driver lacks required features.\n'
-                               'Leave empty to use the device\'s built-in Vulkan driver.')
+        self.driver = QLineEdit(); self.driver.setPlaceholderText('Default: bundled Turnip Adreno 630 driver (or pick a Turnip / AdrenoTools .zip or .so)')
+        self.driver.setToolTip('Qualcomm Adreno Vulkan driver (an AdrenoTools / Turnip .zip, .adpkg, or .so) to bundle in the app.\n'
+                               'Default: bundles the repository\'s Turnip Adreno 630 driver (libcustom_vulkan.so), enabling Vulkan 1.3/1.4 features on Snapdragon 845 / Poco F1.\n'
+                               'Leave empty to use the bundled default driver, or pick another driver package.')
         self.install = QCheckBox('Install on the device when done')
         self.device = QComboBox(); self.device.setMinimumWidth(260)
         refresh = QPushButton('Refresh'); refresh.clicked.connect(self.refresh_devices)

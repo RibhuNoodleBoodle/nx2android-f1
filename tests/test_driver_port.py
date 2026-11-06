@@ -89,3 +89,16 @@ def test_driver_extra_so_rejects_non_elf(tmp_path):
 def test_cli_port_accepts_driver_flag():
     r = subprocess.run([sys.executable, '-m', 'porter', 'port', '--help'], capture_output=True, text=True, check=True)
     assert '--driver' in r.stdout
+
+
+def test_driver_extra_so_fallback_to_repo_driver(tmp_path):
+    p = pipeline.Port.__new__(pipeline.Port)
+    p.o = pipeline.Options(folder=tmp_path, driver=None)
+    p.aw = tmp_path / 'android'
+    p.aw.mkdir()
+
+    extra = p.driver_extra_so()
+    main_so = p.aw / 'driver/libcustom_vulkan.so'
+    assert extra == ['--extra-so', str(main_so)]
+    assert main_so.is_file()
+    assert main_so.read_bytes()[:4] == b'\x7fELF'

@@ -613,9 +613,15 @@ class Port:
 
     def driver_extra_so(self):
         """Extract or copy --driver (.zip / .adpkg with meta.json or raw .so) into <build folder>/android/driver/ as libcustom_vulkan.so (plus any companion lib*.so files),
-        returning the ['--extra-so', ...] arguments for mkapk.py"""
-        if not self.o.driver: return []
-        return [a for p in prepare_custom_driver(self.o.driver, self.aw / 'driver') for a in ('--extra-so', str(p))]
+        returning the ['--extra-so', ...] arguments for mkapk.py. If --driver was not passed, falls back to the repository's
+        bundled custom Vulkan driver (dm/android/driver/libcustom_vulkan.so)."""
+        drv = self.o.driver
+        if not drv:
+            bundled = DM / 'android/driver/libcustom_vulkan.so'
+            if bundled.is_file():
+                drv = bundled
+        if not drv: return []
+        return [a for p in prepare_custom_driver(drv, self.aw / 'driver') for a in ('--extra-so', str(p))]
 
     # ---- apk: the host as a NativeActivity app, signed with the player's key ----
     def apk(self):
@@ -632,6 +638,7 @@ class Port:
                 self.logs / 'android_apk.log', env=self.env)
         self.result['apk'] = str(self.apk_path)
         if self.o.driver: self.result['driver'] = self.o.driver.name
+        elif (DM / 'android/driver/libcustom_vulkan.so').is_file(): self.result['driver'] = 'libcustom_vulkan.so'
         PROG.end(f'{self.apk_path.name}, {self.apk_path.stat().st_size / 2**20:.1f} MB')
 
     def theme(self):
