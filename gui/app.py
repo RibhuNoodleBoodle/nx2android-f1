@@ -68,10 +68,11 @@ class PortTab(QWidget):
         self.language = QComboBox()
         for code, name in LANGUAGES: self.language.addItem(name, code)
         self.out = QLineEdit(); self.out.setPlaceholderText('the game folder')
-        self.driver = QLineEdit(); self.driver.setPlaceholderText('Default: bundled Turnip Adreno 630 driver (or pick a Turnip / AdrenoTools .zip or .so)')
+        self.driver = QLineEdit(); self.driver.setPlaceholderText('Bundled Turnip Adreno 630 driver (mandatory for Adreno 6xx)')
         self.driver.setToolTip('Qualcomm Adreno Vulkan driver (an AdrenoTools / Turnip .zip, .adpkg, or .so) to bundle in the app.\n'
-                               'Default: bundles the repository\'s Turnip Adreno 630 driver (libcustom_vulkan.so), enabling Vulkan 1.3/1.4 features on Snapdragon 845 / Poco F1.\n'
-                               'Leave empty to use the bundled default driver, or pick another driver package.')
+                               'MANDATORY on Qualcomm Adreno devices (Snapdragon 845 / Poco F1):\n'
+                               'The stock Qualcomm driver lacks required Vulkan 1.3 extensions (timeline semaphores, dynamic rendering, imageless framebuffer).\n'
+                               'Turnip driver (libcustom_vulkan.so) is bundled by default. You can also pick an alternate Turnip / AdrenoTools package.')
         self.install = QCheckBox('Install on the device when done')
         self.device = QComboBox(); self.device.setMinimumWidth(260)
         refresh = QPushButton('Refresh'); refresh.clicked.connect(self.refresh_devices)
@@ -96,6 +97,11 @@ class PortTab(QWidget):
                              'Raise it (16, 24 …) if the game still runs out. It uses no memory and does not change the speed.')
         f.addRow('App name', self.app_name); f.addRow('Game language', self.language)
         f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
+        self.driver_warn = QLabel('<span style="color:#d9534f;font-weight:bold;">⚠ Mandatory for Qualcomm Adreno:</span> '
+                                  '<span style="color:#757575">Turnip Vulkan driver is required on Snapdragon 845 / Poco F1 '
+                                  'to support Vulkan 1.3 features. Bundled Turnip driver is used by default.</span>')
+        self.driver_warn.setWordWrap(True)
+        f.addRow('', self.driver_warn)
         f.addRow('Device', dev); f.addRow('', self.replace_signer)
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
         f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.debug); f.addRow('', self.experimental)

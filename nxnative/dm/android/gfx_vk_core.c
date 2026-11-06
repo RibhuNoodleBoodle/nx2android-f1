@@ -122,6 +122,11 @@ void vk_init(void) {
         { uint32_t d = V.props.driverVersion;
           VKLOG("GPU %s (vendor %#x, device %#x), Vulkan %u.%u.%u, driver %u.%u.%u (%#x)", V.props.deviceName, V.props.vendorID, V.props.deviceID, VK_API_VERSION_MAJOR(V.props.apiVersion),
                 VK_API_VERSION_MINOR(V.props.apiVersion), VK_API_VERSION_PATCH(V.props.apiVersion), d >> 22, d >> 12 & 0x3ff, d & 0xfff, d); }
+        if ((V.props.vendorID == 0x5143 || strstr(V.props.deviceName, "Adreno")) && !dm_driver_custom_loaded()) {
+            VKLOG("[RED] WARNING: Turnip driver is mandatory on Qualcomm Adreno (Poco F1 / SD845)!");
+            VKLOG("[RED] Stock Qualcomm driver lacks required Vulkan 1.3 features (dynamic rendering, imageless framebuffers).");
+            VKLOG("[RED] Ensure libcustom_vulkan.so is bundled into the APK.");
+        }
         uint32_t qn = 0; vkGetPhysicalDeviceQueueFamilyProperties(V.pd, &qn, NULL);
         VkQueueFamilyProperties qp[16]; if (qn > 16) qn = 16; vkGetPhysicalDeviceQueueFamilyProperties(V.pd, &qn, qp);
         V.qf = 0; while (V.qf < qn && (qp[V.qf].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) V.qf++;
@@ -188,7 +193,13 @@ void vk_init(void) {
         // DM_VK_X_FENCES=1 (start-up): the fences on a device that has them; with DM_VK_X_BC_CPU=1 below, a device of today stands in for those drivers
         { const char *e = getenv("DM_VK_X_FENCES");
           V.has_timeline = (v12 ? f12.timelineSemaphore : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES)[0]) && !(e && atoi(e)); }
-        if (!V.has_timeline) VKLOG("no timeline semaphores (Vulkan 1.2 or VK_KHR_timeline_semaphore): submissions signal fences");
+        if (!V.has_timeline) {
+            if (V.props.vendorID == 0x5143 || strstr(V.props.deviceName, "Adreno")) {
+                VKLOG("[RED] WARNING: no timeline semaphores on Qualcomm %s (Turnip driver is mandatory for native timeline semaphores)", V.props.deviceName);
+            } else {
+                VKLOG("no timeline semaphores (Vulkan 1.2 or VK_KHR_timeline_semaphore): submissions signal fences");
+            }
+        }
         // dynamic rendering is 1.3 or its extension with the feature on; a loaded pointer does not tell, since the loader hands out a trampoline for core functions the driver lacks
         V.has_dynrender = v13 ? f13.dynamicRendering : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES)[0];
         // imageless framebuffers need render pass 2 (gfx_vk_exec.c rp_get): core in 1.2, else its extension
@@ -203,7 +214,7 @@ void vk_init(void) {
                 memset(&V, 0, sizeof V);
                 continue;
             }
-            die("[vk] the device has neither dynamic rendering nor imageless framebuffers with render pass 2: passes cannot be begun");
+            die("[vk] Turnip driver is mandatory on Qualcomm Adreno: stock driver (%s) lacks dynamic rendering / imageless framebuffers. Ensure libcustom_vulkan.so is bundled.", V.props.deviceName);
         }
         if (!v13) VKLOG("Vulkan %u.%u device: %u extensions enabled for the features promoted to 1.2 / 1.3; dynamic rendering %s", VK_API_VERSION_MAJOR(V.props.apiVersion),
                         VK_API_VERSION_MINOR(V.props.apiVersion), npromo, V.has_dynrender ? "yes" : "no (render pass objects only)");

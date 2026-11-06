@@ -578,7 +578,7 @@ void *dm_driver_open_vulkan(int force_system, void **out_gipa) {
     if (!sys_gipa || force_system) return sys_lib;
 
     if (env_on("DM_VK_SYSTEM_DRIVER")) {
-        LOG("[vk] DM_VK_SYSTEM_DRIVER is set: using system Vulkan driver");
+        LOG("[RED] [vk] WARNING: DM_VK_SYSTEM_DRIVER is set! Turnip driver is mandatory on Qualcomm Adreno devices (Poco F1 / SD845).");
         return sys_lib;
     }
 
@@ -588,7 +588,11 @@ void *dm_driver_open_vulkan(int force_system, void **out_gipa) {
     if (!slash) return sys_lib;
     snprintf(g_native_lib_dir, sizeof g_native_lib_dir, "%.*s", (int)(slash - self_dli.dli_fname), self_dli.dli_fname);
     snprintf(g_custom_driver_path, sizeof g_custom_driver_path, "%s/libcustom_vulkan.so", g_native_lib_dir);
-    if (access(g_custom_driver_path, R_OK) != 0) return sys_lib;
+    if (access(g_custom_driver_path, R_OK) != 0) {
+        LOG("[RED] WARNING: No bundled custom Turnip driver found at %s!", g_custom_driver_path);
+        LOG("[RED] Turnip driver is mandatory on Qualcomm Adreno devices (Poco F1 / SD845).");
+        return sys_lib;
+    }
 
     // Crash-loop sentinel and writable Mesa shader cache / temp directory in DM_TEMP (<internalDataPath>/temp)
     const char *tmp_dir = getenv("DM_TEMP");

@@ -613,14 +613,17 @@ class Port:
 
     def driver_extra_so(self):
         """Extract or copy --driver (.zip / .adpkg with meta.json or raw .so) into <build folder>/android/driver/ as libcustom_vulkan.so (plus any companion lib*.so files),
-        returning the ['--extra-so', ...] arguments for mkapk.py. If --driver was not passed, falls back to the repository's
-        bundled custom Vulkan driver (dm/android/driver/libcustom_vulkan.so)."""
+        returning the ['--extra-so', ...] arguments for mkapk.py.
+        Turnip Vulkan driver is mandatory for Qualcomm Adreno / Poco F1: falls back to the repository's bundled
+        custom Vulkan driver (dm/android/driver/libcustom_vulkan.so)."""
         drv = self.o.driver
         if not drv:
             bundled = DM / 'android/driver/libcustom_vulkan.so'
             if bundled.is_file():
                 drv = bundled
-        if not drv: return []
+        if not drv:
+            raise BuildError('Turnip Vulkan driver is mandatory for Snapdragon 845 / Adreno 6xx devices (no driver found in --driver or repository)')
+        say('custom Vulkan driver: Turnip driver is mandatory for Adreno 6xx (Poco F1)')
         return [a for p in prepare_custom_driver(drv, self.aw / 'driver') for a in ('--extra-so', str(p))]
 
     # ---- apk: the host as a NativeActivity app, signed with the player's key ----

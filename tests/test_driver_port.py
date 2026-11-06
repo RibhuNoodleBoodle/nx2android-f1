@@ -102,3 +102,15 @@ def test_driver_extra_so_fallback_to_repo_driver(tmp_path):
     assert extra == ['--extra-so', str(main_so)]
     assert main_so.is_file()
     assert main_so.read_bytes()[:4] == b'\x7fELF'
+
+
+def test_driver_extra_so_mandatory_when_missing(tmp_path, monkeypatch):
+    p = pipeline.Port.__new__(pipeline.Port)
+    p.o = pipeline.Options(folder=tmp_path, driver=None)
+    p.aw = tmp_path / 'android'
+    p.aw.mkdir()
+
+    fake_dm = tmp_path / 'fake_dm'
+    monkeypatch.setattr(pipeline, 'DM', fake_dm)
+    with pytest.raises(BuildError, match='Turnip Vulkan driver is mandatory'):
+        p.driver_extra_so()
