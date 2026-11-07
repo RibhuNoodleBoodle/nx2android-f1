@@ -2,4 +2,4 @@
 status	experimental
 package	org.nx2a.t01006c5015e84000
 orientation	landscape
-env	DM_APP_POOL=2500M
+env	DM_APP_POOL=3500M
