@@ -258,9 +258,12 @@ class Port:
         o = self.o
         say(f'game folder: {o.folder}')
         if o.driver:
-            o.driver = Path(o.driver).expanduser().resolve()
-            if not o.driver.is_file() or o.driver.suffix.lower() not in ('.zip', '.adpkg', '.so'):
-                raise BuildError(f'--driver must be an existing .zip, .adpkg, or .so file: {o.driver}')
+            if str(o.driver).strip().lower() in ('none', 'system', 'stock'):
+                o.driver = 'system'
+            else:
+                o.driver = Path(o.driver).expanduser().resolve()
+                if not o.driver.is_file() or o.driver.suffix.lower() not in ('.zip', '.adpkg', '.so'):
+                    raise BuildError(f'--driver must be an existing .zip, .adpkg, or .so file (or "system"): {o.driver}')
         self.app, self.fam = nsp.scan_nsps(o.folder, dumps.EXTS, o.keys)
         tid = f'{self.app:016X}'
         self.work = o.folder / f'{tid}_build'
@@ -603,8 +606,17 @@ class Port:
 
     # ---- host: the Android host built for this profile with the player's NDK ----
     def host(self):
-        PROG.stage('host', step=f'NDK {self.tools["ndk"].name}')
         out = self.aw / ('host-debug' if self.o.debug else 'host')
+        out.mkdir(parents=True, exist_ok=True)
+        prebuilt = DM / f'android/prebuilt/{self.g.id}/libdmhost.so'
+        if prebuilt.is_file() and not self.o.debug:
+            PROG.stage('host', step=f'prebuilt ({self.g.id[:8]}…)')
+            say(f'using prebuilt custom host binary: {prebuilt.relative_to(DM)}')
+            self.so = out / 'libdmhost.so'
+            shutil.copy2(prebuilt, self.so)
+            PROG.end(f'{self.so.stat().st_size / 2**20:.1f} MB (prebuilt)')
+            return
+        PROG.stage('host', step=f'NDK {self.tools["ndk"].name}')
         nsp.run([PY, DM / 'android/build.py', '--game', self.g.id, '--ndk', self.tools['ndk'], '--out', out, '--lib', '--jobs', str(self.o.jobs)] + ([] if self.o.debug else ['--release']),
                 self.logs / 'android_host.log', env=self.env)
         self.so = out / 'libdmhost.so'
@@ -614,16 +626,34 @@ class Port:
     def driver_extra_so(self):
         """Extract or copy --driver (.zip / .adpkg with meta.json or raw .so) into <build folder>/android/driver/ as libcustom_vulkan.so (plus any companion lib*.so files),
         returning the ['--extra-so', ...] arguments for mkapk.py.
-        Turnip Vulkan driver is mandatory for Qualcomm Adreno / Poco F1: falls back to the repository's bundled
-        custom Vulkan driver (dm/android/driver/libcustom_vulkan.so)."""
+        Turnip Vulkan driver is mandatory for untested or unsupported games.
+        For supported games, the custom driver can be used (bundled repo driver by default, or an explicit --driver)."""
+        is_supported = (not getattr(self, 'provisional', False)) and (getattr(self, 'ap', None) is not None) and (getattr(self.ap, 'status', '') in ('playable', 'wip'))
+        gid = getattr(getattr(self, 'g', None), 'id', 'unknown')
+
+        if getattr(self.o, 'driver', None) == 'system':
+            if not is_supported:
+                raise BuildError(f'Turnip Vulkan driver is mandatory for untested or unsupported games ({gid}): cannot use system driver')
+            say('using system Vulkan driver (no custom driver bundled)')
+            return []
+
         drv = self.o.driver
         if not drv:
             bundled = DM / 'android/driver/libcustom_vulkan.so'
             if bundled.is_file():
                 drv = bundled
+
         if not drv:
-            raise BuildError('Turnip Vulkan driver is mandatory for Snapdragon 845 / Adreno 6xx devices (no driver found in --driver or repository)')
-        say('custom Vulkan driver: Turnip driver is mandatory for Adreno 6xx (Poco F1)')
+            if not is_supported:
+                raise BuildError(f'Turnip Vulkan driver is mandatory for untested or unsupported games ({gid}): no driver found in --driver or repository')
+            say('no custom driver bundled (supported game using system Vulkan driver)')
+            return []
+
+        if not is_supported:
+            say(f'custom Vulkan driver: Turnip driver is mandatory for untested/unsupported games ({gid})')
+        else:
+            say('custom Vulkan driver: using custom driver for supported game')
+
         return [a for p in prepare_custom_driver(drv, self.aw / 'driver') for a in ('--extra-so', str(p))]
 
     # ---- apk: the host as a NativeActivity app, signed with the player's key ----
@@ -640,7 +670,8 @@ class Port:
                 + (['--landscape'] if self.ap.landscape else []) + (['--icon', icon] if icon else []) + self.theme() + extra_so + ([] if self.o.debug else ['--release']),
                 self.logs / 'android_apk.log', env=self.env)
         self.result['apk'] = str(self.apk_path)
-        if self.o.driver: self.result['driver'] = self.o.driver.name
+        if self.o.driver and self.o.driver != 'system': self.result['driver'] = self.o.driver.name
+        elif self.o.driver == 'system': self.result['driver'] = 'system'
         elif (DM / 'android/driver/libcustom_vulkan.so').is_file(): self.result['driver'] = 'libcustom_vulkan.so'
         PROG.end(f'{self.apk_path.name}, {self.apk_path.stat().st_size / 2**20:.1f} MB')
 

@@ -109,8 +109,69 @@ def test_driver_extra_so_mandatory_when_missing(tmp_path, monkeypatch):
     p.o = pipeline.Options(folder=tmp_path, driver=None)
     p.aw = tmp_path / 'android'
     p.aw.mkdir()
+    p.provisional = True
 
     fake_dm = tmp_path / 'fake_dm'
     monkeypatch.setattr(pipeline, 'DM', fake_dm)
-    with pytest.raises(BuildError, match='Turnip Vulkan driver is mandatory'):
+    with pytest.raises(BuildError, match='Turnip Vulkan driver is mandatory for untested or unsupported games'):
         p.driver_extra_so()
+
+
+def test_driver_extra_so_supported_game_allowed_without_driver(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    p = pipeline.Port.__new__(pipeline.Port)
+    p.o = pipeline.Options(folder=tmp_path, driver=None)
+    p.aw = tmp_path / 'android'
+    p.aw.mkdir()
+    p.provisional = False
+    p.ap = SimpleNamespace(status='playable')
+    p.g = SimpleNamespace(id='0100A00019DE0000')
+
+    fake_dm = tmp_path / 'fake_dm'
+    monkeypatch.setattr(pipeline, 'DM', fake_dm)
+    assert p.driver_extra_so() == []
+
+
+def test_driver_extra_so_supported_game_system_driver(tmp_path):
+    from types import SimpleNamespace
+    p = pipeline.Port.__new__(pipeline.Port)
+    p.o = pipeline.Options(folder=tmp_path, driver='system')
+    p.aw = tmp_path / 'android'
+    p.aw.mkdir()
+    p.provisional = False
+    p.ap = SimpleNamespace(status='playable')
+    p.g = SimpleNamespace(id='0100A00019DE0000')
+
+    assert p.driver_extra_so() == []
+
+
+def test_driver_extra_so_unsupported_game_rejects_system_driver(tmp_path):
+    p = pipeline.Port.__new__(pipeline.Port)
+    p.o = pipeline.Options(folder=tmp_path, driver='system')
+    p.aw = tmp_path / 'android'
+    p.aw.mkdir()
+    p.provisional = True
+
+    with pytest.raises(BuildError, match='cannot use system driver'):
+        p.driver_extra_so()
+
+
+def test_host_uses_prebuilt_binary(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    p = pipeline.Port.__new__(pipeline.Port)
+    p.o = pipeline.Options(folder=tmp_path, debug=False)
+    p.aw = tmp_path / 'android'
+    p.aw.mkdir()
+    p.g = SimpleNamespace(id='0100A00019DE0000')
+
+    fake_dm = tmp_path / 'fake_dm'
+    prebuilt_dir = fake_dm / 'android' / 'prebuilt' / '0100A00019DE0000'
+    prebuilt_dir.mkdir(parents=True)
+    fake_so = prebuilt_dir / 'libdmhost.so'
+    fake_so.write_bytes(b'FAKE_PREBUILT_SO')
+
+    monkeypatch.setattr(pipeline, 'DM', fake_dm)
+    p.host()
+    assert p.so.is_file()
+    assert p.so.read_bytes() == b'FAKE_PREBUILT_SO'
+
