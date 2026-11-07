@@ -226,6 +226,10 @@ void vk_init(void) {
         V.max_aniso = V.props.limits.maxSamplerAnisotropy;
         // enable: everything the shaders may use that the device has
         VkPhysicalDeviceFeatures en = ff.features; en.robustBufferAccess = 0; en.shaderFloat64 = 0;
+        // Diagnostic: distinguish out-of-range buffer accesses from other GPU faults.
+        { const char *e = getenv("DM_VK_ROBUST_BUFFER");
+          en.robustBufferAccess = e && atoi(e) && ff.features.robustBufferAccess;
+          if (e && atoi(e)) VKLOG("robust buffer access: %s", en.robustBufferAccess ? "on" : "unsupported"); }
         f12.bufferDeviceAddressCaptureReplay = 0; f12.bufferDeviceAddressMultiDevice = 0;
         featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES)[1] = featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES)[2] = 0;   // (its extension's: the same two)
         f13.robustImageAccess = 0;
