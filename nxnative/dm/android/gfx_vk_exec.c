@@ -182,6 +182,7 @@ void vk_exec_reset(void) {   // a new submission: NVN state does not carry over 
     static int inited; if (!inited) { inited = 1; state_reset(); crash_add_note_hook(build_dump); prewarm_start(); compute_warm_start(); }
     g_rc_npend = 0; g_rc_skip = 0;
     S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_cb_draws = 0; g_ord_parts = 0; g_psplit_now = 0; g_set_epoch++; x_read();
+    S.row_stride = 0; S.image_stride = 0;
     if (g_prof_on) { extern uint64_t g_pkg_ns, g_pkg_n; memset(g_prof_ns, 0, sizeof g_prof_ns); g_prof_t0 = tick(); g_prof_pkg0 = g_pkg_ns; g_prof_npkg0 = g_pkg_n; g_prof_pipes0 = g_vkst.pipes_built; }
     { extern volatile int g_vk_samp_log; if (g_vk_samp_log > 0) VKLOG("submission begins (present %llu, thread %d)", (unsigned long long)g_tex_frame, (int)gettid()); }
 }
@@ -1982,13 +1983,23 @@ static VkImageSubresourceLayers sub_of(vkimg_t *im, const view_t *v, int has_v, 
 static void copy_b2t(const p_copy_b2t *c, int to_texture) {
     vk_end_pass_land();
     vkimg_t *im = vk_tex(c->tex); const vkfmt_t *f = vk_fmt(c->tex->d.format);
+    static int nlog_copy;
+    if (nlog_copy++ < 20) {
+        LOG("[copy_b2t] to_texture=%d tex=%p (fmt=%d %dx%d d=%d) buf=%#llx im=%p f=%p row_st=%lld img_st=%lld",
+            to_texture, (void *)c->tex, c->tex ? c->tex->d.format : -1, c->r.width, c->r.height, c->r.depth,
+            (unsigned long long)c->src, (void *)im, (void *)f, (long long)S.row_stride, (long long)S.image_stride);
+    }
     if (!im || !f) return;
     VkBuffer b; VkDeviceSize o;
     if (!vk_buf_at(c->src, 1, &b, &o)) { VKRED_ONCE(70, "buffer of a buffer ↔ texture copy outside the memory pools"); return; }
     VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
     unsigned bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1;
+    size_t tight_row = (size_t)((c->r.width + bw - 1) / bw) * f->bpb;
+    size_t actual_row = S.row_stride > 0 ? (size_t)S.row_stride : tight_row;
     uint32_t rowlen = S.row_stride > 0 && f->bpb ? (uint32_t)(S.row_stride / f->bpb) * bw : 0;
-    uint32_t imgh = S.image_stride > 0 && S.row_stride > 0 ? (uint32_t)(S.image_stride / S.row_stride) * bh : 0;
+    uint32_t imgh = S.image_stride > 0 && actual_row ? (uint32_t)(S.image_stride / actual_row) * bh : 0;
+    if (rowlen && rowlen < (uint32_t)c->r.width) rowlen = 0;
+    if (imgh && imgh < (uint32_t)(c->r.height ? c->r.height : 1)) imgh = 0;
     int layered = im->layers > 1, depth = c->r.depth ? c->r.depth : 1;
     VkBufferImageCopy r = {o, rowlen, imgh, sub_of(im, &c->view, c->has_view, c->r.zoffset), {c->r.xoffset, c->r.yoffset, layered ? 0 : c->r.zoffset},
                            {(uint32_t)c->r.width, (uint32_t)(c->r.height ? c->r.height : 1), layered ? 1 : (uint32_t)depth}};
@@ -2001,10 +2012,26 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
         for (uint32_t z = 0; z < nz; z++) vk_bc_decode(f, (const uint8_t *)(uintptr_t)c->src + z * slice, pitch, w, h, 1, p + z * out);
         b = sb; r.bufferOffset = so; r.bufferRowLength = 0; r.bufferImageHeight = 0;
     }
+    uint32_t h = c->r.height ? c->r.height : 1;
+    uint32_t d = (uint32_t)depth;
+    size_t copy_bytes = S.image_stride > 0 ? (size_t)S.image_stride * d :
+                        S.row_stride > 0 ? (size_t)S.row_stride * ((h + bh - 1) / bh) * d :
+                        (size_t)((c->r.width + bw - 1) / bw) * f->bpb * ((h + bh - 1) / bh) * d;
     if (g_watch_off >= 0) { char w[96]; snprintf(w, sizeof w, "buffer copy %s (buffer %#llx, %dx%d)", to_texture ? "destination" : "source", (unsigned long long)c->src, c->r.width, c->r.height); vk_watch(im, w); }
-    if (to_texture) { vkCmdCopyBufferToImage(cb, b, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r); im->gpu_w = 1; }
-    else { vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, b, 1, &r);
-        void vk_gpu_wrote(uint64_t a, uint64_t n); vkpool_t *p = vk_pool_of(c->src, 1); vk_gpu_wrote(c->src, p ? p->hi - c->src : 1); vk_readback_unknown(); }   // (to the pool's end: the copy's extent in memory is not worked out here)
+    if (to_texture) {
+        if (copy_bytes) sys_dcache_flush((void *)(uintptr_t)c->src, copy_bytes);
+        vkCmdCopyBufferToImage(cb, b, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+        im->gpu_w = 1;
+    }
+    else {
+        vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, b, 1, &r);
+        void vk_gpu_wrote(uint64_t a, uint64_t n);
+        vkpool_t *p = vk_pool_of(c->src, 1);
+        vk_gpu_wrote(c->src, copy_bytes ? copy_bytes : (p ? p->hi - c->src : 1));
+        vk_readback_unknown();
+        VkMemoryBarrier b_host = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &b_host, 0, NULL, 0, NULL);
+    }
     vk_img_barrier_all(cb);
 }
 // Scaled copies of depth and stencil: Adreno blits no depth-stencil format (Pokémon Legends: Arceus copies its 1920x1080 D24S8 depth to a 480x270 one, which stayed unwritten), so each

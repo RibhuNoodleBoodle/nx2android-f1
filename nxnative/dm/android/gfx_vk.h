@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <libkern/OSCacheControl.h>
 #include "dm.h"
 #include "nvn_obj.h"
 #include "nvn_mtl.h"

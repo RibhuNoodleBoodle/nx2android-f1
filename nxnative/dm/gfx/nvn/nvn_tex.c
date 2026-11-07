@@ -112,8 +112,8 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o) {
         return;
     }
     unsigned tileH = 0, tileD = 0;
-    if (dpl == 2) { uint32_t ah = blk(h * sy, t.bh); tileH = d->pkg_block_h ? (unsigned)d->pkg_block_h - 1 : pick_tile(ah * 3 / 16); }
-    else if (dpl == 3) tileD = pick_tile(z + z / 2);
+    if (dpl >= 2) { uint32_t ah = blk(h * sy, t.bh); tileH = d->pkg_block_h ? (unsigned)d->pkg_block_h - 1 : pick_tile(ah * 3 / 16); }
+    if (dpl >= 3) tileD = pick_tile(z + z / 2);
     o->tileH = tileH; o->tileD = tileD;
     unsigned levels = d->levels ? d->levels : 1;
     uint64_t ls = level_offset(d, levels, dpl, w, h, z, tileH, tileD, t);

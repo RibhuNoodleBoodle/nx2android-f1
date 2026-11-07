@@ -38,6 +38,7 @@
 #include <stdatomic.h>
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
+#include <libkern/OSCacheControl.h>
 
 // ---------- Slot table, thunks, unimplemented stubs ----------
 typedef struct { _Atomic uint64_t cnt; void *fn; } nvn_slot_t;
@@ -232,6 +233,8 @@ NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, 
     if (!o->mem) return;
     if (!(o->flags & 0x200)) fl_add(o->mem + off, n);
     ft_flush(o->mem + off, n);
+    sys_dcache_flush(o->mem + off, n);
+    nvn_dirty_release(o->mem + off, n);
 }
 NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) { return (NVNbufferAddress)((const pool_t *)p)->mem; }
 
@@ -550,6 +553,12 @@ static void read_texels(const tex_t *o, const view_t *v, const NVNcopyRegion *r,
     if (!row) row = wb;
     if (!img) img = row * hb;
     unsigned level = v && v->set_levels ? (unsigned)v->base_level : 0, layer0 = v && v->set_layers ? (unsigned)v->min_layer : 0;
+    static int nlog_read;
+    if (nlog_read++ < 30) {
+        LOG("[read_texels] t=%p (%ux%ux%u fmt=%#x) r=(%d,%d %dx%d d=%d) dst=%p row=%zd img=%zd",
+            (const void *)o, o->d.width, o->d.height, o->d.depth, o->d.format,
+            r->xoffset, r->yoffset, r->width, r->height, r->depth, (void *)dst, (size_t)row, (size_t)img);
+    }
     nvn_drain(); replay_lock(); mtl_read_texels(o, level, layer0, r, dst, (size_t)row, (size_t)img); replay_unlock();   // after every submission before it
 }
 NVN(nvnTextureReadTexels, void, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r, void *dst) {
@@ -558,7 +567,10 @@ NVN(nvnTextureReadTexels, void, const NVNtexture *t, const NVNtextureView *v, co
 NVN(nvnTextureReadTexelsStrided, void, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r, void *dst, ptrdiff_t row, ptrdiff_t img) {
     read_texels(CTX(t), (const view_t *)v, r, dst, row, img);
 }
-NVN(nvnTextureInvalidateTexels, void, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r) { (void)t; (void)v; (void)r; }
+NVN(nvnTextureInvalidateTexels, void, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r) {
+    (void)v; (void)r;
+    if (t && CTX(t)->mem) sys_dcache_flush(CTX(t)->mem, CTX(t)->L.size);
+}
 
 // ---------- Samplers ----------
 #define SB(b) (&((samp_builder_t *)(b))->p)
@@ -1061,6 +1073,12 @@ NVN(nvnCommandBufferCopyBufferToTexture, void, NVNcommandBuffer *c, NVNbufferAdd
 }
 NVN(nvnCommandBufferCopyTextureToBuffer, void, NVNcommandBuffer *c, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r,
     NVNbufferAddress dst, int flags) {
+    static int nlog_nvn_t2b;
+    if (nlog_nvn_t2b++ < 20) {
+        LOG("[nvnCopyT2B] t=%p fmt=%d %dx%d dst=%#llx r=(%d,%d %dx%d)",
+            (void *)t, t ? CTX(t)->d.format : -1, t ? CTX(t)->d.width : -1, t ? CTX(t)->d.height : -1,
+            (unsigned long long)dst, r ? r->xoffset : 0, r ? r->yoffset : 0, r ? r->width : 0, r ? r->height : 0);
+    }
     p_copy_b2t *o = REC_SNAP(c, OP_COPY_T2B, p_copy_b2t, 1); o->src = dst; o->tex = tex_snap(o, SNAP_OFF(p_copy_b2t), 0, t, (uint64_t)__builtin_return_address(0)); copy_view(&o->view, &o->has_view, v); o->r = *r; o->flags = flags;
 }
 // Clear a texture region with the given value (float / unsigned integer versions; mask = channel write mask)
@@ -2025,14 +2043,34 @@ NVN(nvnBufferMap, void *, const NVNbuffer *buf) { return BF(buf)->pool->mem + BF
 NVN(nvnBufferGetSize, size_t, const NVNbuffer *buf) { return (size_t)BF(buf)->size; }
 NVN(nvnBufferGetMemoryPool, NVNmemoryPool *, const NVNbuffer *buf) { return (NVNmemoryPool *)BF(buf)->pool; }
 NVN(nvnBufferGetMemoryOffset, ptrdiff_t, const NVNbuffer *buf) { return (ptrdiff_t)BF(buf)->off; }
-NVN(nvnBufferFlushMappedRange, void, const NVNbuffer *buf, ptrdiff_t off, size_t n) { (void)buf; (void)off; (void)n; }        // unified memory: nothing to flush
-NVN(nvnBufferInvalidateMappedRange, void, const NVNbuffer *buf, ptrdiff_t off, size_t n) { (void)buf; (void)off; (void)n; }
+NVN(nvnBufferFlushMappedRange, void, const NVNbuffer *buf, ptrdiff_t off, size_t n) {
+    if (!buf) return;
+    const buf_t *b = BF(buf);
+    if (!b->pool || !b->pool->mem) return;
+    size_t sz = n ? n : (b->size > (uint64_t)off ? (size_t)(b->size - off) : 0);
+    if (b->size && (uint64_t)off + sz > b->size) sz = b->size > (uint64_t)off ? (size_t)(b->size - off) : 0;
+    if (sz) sys_dcache_flush(b->pool->mem + b->off + off, sz);
+}
+NVN(nvnBufferInvalidateMappedRange, void, const NVNbuffer *buf, ptrdiff_t off, size_t n) {
+    if (!buf) return;
+    const buf_t *b = BF(buf);
+    if (!b->pool || !b->pool->mem) return;
+    size_t sz = n ? n : (b->size > (uint64_t)off ? (size_t)(b->size - off) : 0);
+    if (b->size && (uint64_t)off + sz > b->size) sz = b->size > (uint64_t)off ? (size_t)(b->size - off) : 0;
+    if (sz) sys_dcache_flush(b->pool->mem + b->off + off, sz);
+}
 
 // Memory pool queries
 NVN(nvnMemoryPoolGetFlags, NVNmemoryPoolFlags, const NVNmemoryPool *p) { return (NVNmemoryPoolFlags)((const pool_t *)p)->flags; }
 NVN(nvnMemoryPoolMap, void *, const NVNmemoryPool *p) { return ((const pool_t *)p)->mem; }
 NVN(nvnMemoryPoolGetSize, size_t, const NVNmemoryPool *p) { return (size_t)((const pool_t *)p)->size; }
-NVN(nvnMemoryPoolInvalidateMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { (void)p; (void)off; (void)n; }
+NVN(nvnMemoryPoolInvalidateMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) {
+    const pool_t *o = (const pool_t *)p;
+    if (!o || !o->mem) return;
+    size_t sz = n ? n : (o->size > (uint64_t)off ? (size_t)(o->size - off) : 0);
+    if (o->size && (uint64_t)off + sz > o->size) sz = o->size > (uint64_t)off ? (size_t)(o->size - off) : 0;
+    if (sz) sys_dcache_flush(o->mem + off, sz);
+}
 NVN(nvnMemoryPoolSetDebugLabel, void, NVNmemoryPool *p, const char *s) { (void)p; (void)s; }
 // Debug labels: only for NVN debugging tools, unused by the host
 NVN(nvnWindowSetDebugLabel, void, NVNwindow *w, const char *s) { (void)w; (void)s; }

@@ -25,7 +25,7 @@ int mtl_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1) { (void)f; *t0 = *t1 = 
 void mtl_lc_stats(uint64_t *t, uint64_t *l) { *t = *l = 0; }
 void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) { (void)frame; (void)rss_mb; }
 uint64_t mtl_pkg_miss(void) { return 0; }
-void mtl_pkg_stats(uint64_t *u, uint64_t *r) { *u = *r = 0; }
+__attribute__((weak)) void mtl_pkg_stats(uint64_t *u, uint64_t *r) { *u = *r = 0; }
 void mtl_res_stats(char *out, size_t n) { if (n) out[0] = 0; }
 void mtl_stats(uint64_t *p, uint64_t *d) { *p = *d = 0; }
 void mtl_ub_present(double iv) { (void)iv; }

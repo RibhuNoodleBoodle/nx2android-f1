@@ -230,7 +230,8 @@ void vk_tex_prepare(VkCommandBuffer cb, vkimg_t *im) {
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
 }
 // Upload a packaged texture from guest memory: each level and layer deswizzled into scratch memory, copied in by the upload command buffer
-uint64_t g_pkg_n, g_pkg_bytes, g_pkg_ns;   // packaged texture uploads: count, bytes, CPU time (the replay's per-frame line)
+uint64_t g_pkg_n, g_pkg_bytes, g_pkg_ns, g_pkg_reup;   // packaged texture uploads: count, bytes, CPU time (the replay's per-frame line)
+void mtl_pkg_stats(uint64_t *u, uint64_t *r) { *u = g_pkg_n; *r = g_pkg_reup; }
 static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f);
 static uint64_t pkg_hash(const uint8_t *m, size_t n) {   // FNV-1a over 8-byte words
     uint64_t h = 1469598103934665603ull; size_t i = 0;
@@ -268,6 +269,7 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
                 for (uint32_t y = 0; y < by * z; y++) memcpy(dst + y * pitch, t->mem + (size_t)y * stride, pitch);
             } else if (nvn_deswizzle(&t->d, lv, ly, t->mem, dst, pitch)) { free(blocks); VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return; }
             if (blocks) { dst = vk_scratch((size_t)w * h * z * f->dbpp, 16, &sb, &so); bc_decode(f, blocks, pitch, w, h, z, dst); free(blocks); }   // (BC the device lacks)
+            sys_dcache_flush(dst, blocks ? (size_t)w * h * z * f->dbpp : slab);
             VkBufferImageCopy r = {so, 0, 0, {im->aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, lv, ly, 1}, {0, 0, 0}, {w, h, z}};
             vkCmdCopyBufferToImage(cb, sb, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
         }
@@ -807,19 +809,54 @@ VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
 // CPU readback of texels (ReadTexels): the image copied to scratch memory by a submission of its own, waited for
 void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img) {
     void mtl_sub_begin(void); uint64_t mtl_sub_commit(void); int mtl_wait(uint64_t, uint64_t);
-    mtl_sub_begin();
-    vkimg_t *im = vk_tex(t); const vkfmt_t *f = vk_fmt(t->d.format);
+    const vkfmt_t *f = vk_fmt(t->d.format);
     size_t depth = r->depth ? r->depth : 1;
-    if (!im || !f) { mtl_sub_commit(); for (size_t z = 0; z < depth; z++) for (int y = 0; y < r->height; y++) memset(dst + z * img + (size_t)y * row, 0, row); return; }
-    if (f->dec) { VKRED_ONCE(17, "ReadTexels of a BC texture decoded on the CPU: zeros returned"); mtl_sub_commit(); for (size_t z = 0; z < depth; z++) for (int y = 0; y < (r->height + 3) / 4; y++) memset(dst + z * img + (size_t)y * row, 0, row); return; }
-    unsigned bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1;
-    size_t pitch = (size_t)((r->width + bw - 1) / bw) * f->bpb, rows = (r->height + bh - 1) / bh;
+    unsigned bw = f && f->bw ? f->bw : 1, bh = f && f->bh ? f->bh : 1;
+    size_t pitch = f && f->bpb ? (size_t)((r->width + bw - 1) / bw) * f->bpb : (size_t)r->width * 4;
+    size_t rows = (r->height + bh - 1) / bh;
+    if (!row) row = pitch;
+    if (!img) img = pitch * rows;
+
+    int nvn_ft_written(const tex_t *);
+    int is3d = t->d.target == 2;
+    int nz = (int)depth;
+    if ((t->has_layout || packaged_tex(t) || (DM_GAME_TEX_DIRTY_UPLOAD && nvn_ft_written(t))) && t->mem && f && f->bpb) {
+        uint32_t lw = t->d.width >> level ? t->d.width >> level : 1, lh = t->d.height >> level ? t->d.height >> level : 1, lz = is3d ? (t->d.depth >> level ? t->d.depth >> level : 1) : 1;
+        size_t lp = (size_t)((lw + bw - 1) / bw) * f->bpb, lr = (lh + bh - 1) / bh;
+        uint8_t *lin = malloc(lp * lr * lz);
+        if (lin) {
+            uint32_t x0 = (uint32_t)(r->xoffset / bw) * f->bpb, y0 = (uint32_t)(r->yoffset / bh);
+            size_t wb = (size_t)((r->width + bw - 1) / bw) * f->bpb;
+            int ok = 1;
+            for (int z = 0; z < nz && ok; z++) {
+                unsigned layer = is3d ? 0 : layer0 + (unsigned)(r->zoffset + z);
+                if ((is3d && z == 0) || !is3d) {
+                    if (nvn_deswizzle(&t->d, level, layer, t->mem, lin, lp)) ok = 0;
+                }
+                if (ok) {
+                    const uint8_t *src = lin + (is3d ? (size_t)(r->zoffset + z) * lp * lr : 0);
+                    for (size_t y = 0; y < rows; y++) memcpy(dst + (size_t)z * img + y * row, src + (y0 + y) * lp + x0, wb < row ? wb : row);
+                }
+            }
+            free(lin);
+            if (ok) return;
+        }
+    }
+
+    mtl_sub_begin();
+    vkimg_t *im = vk_tex(t);
+    if (!im || !f) { mtl_sub_commit(); for (size_t z = 0; z < depth; z++) for (size_t y = 0; y < rows; y++) memset(dst + z * img + y * row, 0, row); return; }
+    if (f->dec) { VKRED_ONCE(17, "ReadTexels of a BC texture decoded on the CPU: zeros returned"); mtl_sub_commit(); for (size_t z = 0; z < depth; z++) for (size_t y = 0; y < rows; y++) memset(dst + z * img + y * row, 0, row); return; }
+
     VkBuffer sb; VkDeviceSize so; uint8_t *p = vk_scratch(pitch * rows * depth, 16, &sb, &so);
     VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
-    int is3d = im->d > 1;
+    is3d = im->d > 1;
     VkBufferImageCopy c = {so, 0, 0, {im->aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, level, is3d ? 0 : layer0 + (uint32_t)r->zoffset, is3d ? 1 : (uint32_t)depth},
                            {r->xoffset, r->yoffset, is3d ? r->zoffset : 0}, {(uint32_t)r->width, (uint32_t)r->height, is3d ? (uint32_t)depth : 1}};
     vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, sb, 1, &c);
+    VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
     mtl_wait(mtl_sub_commit(), ~0ull);
+    sys_dcache_flush(p, pitch * rows * depth);
     for (size_t z = 0; z < depth; z++) for (size_t y = 0; y < rows; y++) memcpy(dst + z * img + y * row, p + (z * rows + y) * pitch, pitch < row ? pitch : row);
 }

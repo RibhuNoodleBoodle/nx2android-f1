@@ -954,9 +954,10 @@ static void post(post_op o) { vksub_t *s = cur(); if (s->npost == s->cappost) { 
 void mtl_init(void) { vk_init(); }
 static int g_shadow_pools;
 static void pools_readback_barrier(VkCommandBuffer cb) {
-    if (!g_shadow_pools) return;
-    // The last part can be dropped after earlier ones were sent; each part must publish its writes for the CPU merge.
-    VkMemoryBarrier b = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
+    vksub_t *s = cur();
+    if (!g_shadow_pools && (!s || !s->ngw)) return;
+    // Each part must publish its writes for the CPU.
+    VkMemoryBarrier b = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &b, 0, NULL, 0, NULL);
 }
 void mtl_sub_begin(void) {
@@ -1171,7 +1172,17 @@ static void *completion_main(void *a) {
         while (!g_ch) pthread_cond_wait(&g_ccv, &g_cmu);
         cpend *c = g_ch; pthread_mutex_unlock(&g_cmu);
         if (V.has_timeline) wait_fence(c->fence); else { VkResult r = vkWaitForFences(V.dev, 1, &g_fring[c->fence % NFRING], VK_TRUE, UINT64_MAX); if (r != VK_SUCCESS) die("[vk] GPU fence wait did not complete: %d", r); }
-        if (g_shadow_pools && c->rslot >= 0) pools_copy_back(&g_slot[c->rslot]);
+        if (c->rslot >= 0) {
+            vksub_t *s = &g_slot[c->rslot];
+            if (g_shadow_pools) pools_copy_back(s);
+            else if (s->ngw) {
+                for (int k = 0; k < s->ngw; k++) {
+                    if (s->gw[k].hi > s->gw[k].lo) {
+                        sys_dcache_flush((void *)(uintptr_t)s->gw[k].lo, (size_t)(s->gw[k].hi - s->gw[k].lo));
+                    }
+                }
+            }
+        }
         if (g_tsq && c->slot >= 0) { uint64_t t[2]; if (vkGetQueryPoolResults(V.dev, g_tsq, 2 * (uint32_t)c->slot, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] > t[0])
             { uint64_t ns = (uint64_t)((double)(t[1] - t[0]) * V.props.limits.timestampPeriod); g_gpu_ns += ns; int k = (int)(c->frame % 64);
               if (g_frame_gpu_of[k] != c->frame + 1) { g_frame_gpu[k] = 0; g_frame_gpu_of[k] = c->frame + 1; } g_frame_gpu[k] += ns; } }
