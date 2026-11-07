@@ -32,6 +32,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Cuphead · `0100A5C00D162000` · profile here
 - [x] DARK SOULS: REMASTERED · `01004AB00A260000`
 - [ ] Digimon Story Cyber Sleuth: Complete Edition · `010014E00DB56000` · profile here
+- [ ] Disco Elysium - The Final Cut · `01006C5015E84000` · profile here · testing on Poco F1
 - [x] Donkey Kong Country Returns HD · `01009D901BC56000`
 - [ ] Donkey Kong Country: Tropical Freeze · `0100C1F0051B6000` · upstream profile
 - [ ] DRAGON QUEST VII Reimagined · `0100A9D01C446000` · profile here
