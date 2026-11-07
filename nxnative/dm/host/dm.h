@@ -113,6 +113,10 @@ void dm_guest_frame_tick(void);        // Called on every present (hle_nvn.c): w
 uint64_t dm_nvn_frame_count(void);
 uint64_t dm_nvn_sub_cpu_ns(void);     // Cumulative CPU nanoseconds of submit (excluding present)
 void dm_backtrace(uint64_t fp);
+int crash_addr_str(char *b, size_t n, uint64_t a);   // "module+off", "symbol+off" or "library+off"
+uint64_t crash_code_addr(uint64_t a);   // a return address without its pointer authentication code
+void crash_thread_name(unsigned t, char *b, size_t n);   // by thread port (the tid on Android)
+void crash_add_note_hook(void (*fn)(void));   // printed after the crashing thread's registers
 void crash_watch_progress(uint32_t tick, const char *stage);
 void crash_watch_frame(void);
 void crash_watch_pregame_done(void);
@@ -124,6 +128,7 @@ extern struct dm_flags { int thr, svc, fs, movie, dbg, imports, bootprof; } g_fl
 void *objmap_get(const void *guest); void objmap_put(const void *guest, void *host); void *objmap_del(const void *guest);
 void hle_signal_system_event(void *g);   // hle_thread.c: signal a service-layer SystemEvent (any thread)
 void hle_bind_system_event(void *g, int autoclear);   // On a guest thread, bind a guest SystemEvent to a kernel event
+void hle_rebind_system_event(void *g, int autoclear);   // the same, dropping a binding this address had (a struct reused without being destroyed)
 void hle_clear_system_event(void *g);    // hle_thread.c: clear a bound service-layer SystemEvent (any thread)
 int hle_signal_bound_system_event(void *g);   // hle_thread.c: signal a service-layer SystemEvent only if it is bound (any thread); 0 when it is not
 // Page fault hook / hook before the host writes guest memory (crash.c; used for write-protect dirty page tracking)
