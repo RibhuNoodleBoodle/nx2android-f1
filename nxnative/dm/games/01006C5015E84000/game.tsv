@@ -21,6 +21,10 @@ modules	main subsdk0 sdk
 romfs_marker	Data/AmplifyTexture/0d06445cc08e1d1a9a28ab04e56a8e48.vtc2_nx
 zip_store	.assets:.bundle:.dat:.json:.png:.resource:.ress:.vtc2_nx:.metallib
 
+# ---- Textures ----
+tex_flush_upload	on
+tex_dirty_upload	on
+
 # ---- Memory ----
 # the NPDM declares 16 MB of system resource (virtual address memory) and main sets a heap: a 5 GB block with a large alias region; the heap check sizes the heap region from the heap the game asks for
 mem_reserve	0x340000000
