@@ -3,13 +3,7 @@
 # the rewrite for DM_TARGET=android, the Vulkan shader bundle, the host built with the player's NDK, the APK, the data pack and the install.
 # Work files go where upstream's NSP script puts them, <game folder>/<title ID>_build/ (extract/, aoc/, shader/, logs/ are shared with an iOS build of the same folder),
 # with the Android ones in its android/ folder.
-import importlib.util, json, os, re, shutil, sys, zipfile
-if hasattr(sys.stdout, 'reconfigure'):
-    try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    except Exception: pass
-if hasattr(sys.stderr, 'reconfigure'):
-    try: sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-    except Exception: pass
+import importlib.util, os, re, shutil, sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -171,58 +165,6 @@ def inspect(folder, keys=None):
     return info
 
 
-def prepare_custom_driver(driver_path: Path, out_dir: Path) -> list[Path]:
-    """Validate and stage a custom Vulkan driver (.zip, .adpkg, or .so) into out_dir.
-    Returns a list of staged .so Paths (main driver renamed to libcustom_vulkan.so, plus any companion .so files)."""
-    driver_path = Path(driver_path).expanduser().resolve()
-    if not driver_path.is_file():
-        raise BuildError(f'custom Vulkan driver not found: {driver_path}')
-    nsp.rmtree(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
-    staged: list[Path] = []
-    suf = driver_path.suffix.lower()
-    if suf in ('.zip', '.adpkg'):
-        try:
-            with zipfile.ZipFile(driver_path) as zf:
-                names = [n for n in zf.namelist() if not n.endswith('/')]
-                meta_name = next((n for n in names if Path(n).name == 'meta.json'), None)
-                meta = json.loads(zf.read(meta_name).decode('utf-8', 'replace')) if meta_name else {}
-                lib_want = meta.get('libraryName', '')
-                so_entries = [n for n in names if n.lower().endswith('.so')]
-                if not so_entries:
-                    raise BuildError(f'no .so file found inside driver archive {driver_path}')
-                main_entry = next((n for n in so_entries if Path(n).name == lib_want), None) or so_entries[0]
-                main_bytes = zf.read(main_entry)
-                if main_bytes[:4] != b'\x7fELF':
-                    raise BuildError(f'{main_entry} in {driver_path} is not an ELF shared library')
-                dst_main = out_dir / 'libcustom_vulkan.so'
-                dst_main.write_bytes(main_bytes)
-                staged.append(dst_main)
-                for n in so_entries:
-                    if n == main_entry:
-                        continue
-                    bn = Path(n).name
-                    if not bn.startswith('lib'):
-                        bn = f'lib{bn}'
-                    dst_comp = out_dir / bn
-                    dst_comp.write_bytes(zf.read(n))
-                    staged.append(dst_comp)
-                drv_label = f'{meta.get("name", driver_path.name)}' + (f' ({meta["driverVersion"]})' if meta.get('driverVersion') else '')
-                say(f'custom Vulkan driver: {drv_label} ({Path(main_entry).name} → lib/arm64-v8a/libcustom_vulkan.so)')
-        except (zipfile.BadZipFile, json.JSONDecodeError) as e:
-            raise BuildError(f'invalid driver archive {driver_path}: {e}') from e
-    elif suf == '.so':
-        data = driver_path.read_bytes()
-        if data[:4] != b'\x7fELF':
-            raise BuildError(f'{driver_path} is not an ELF shared library')
-        dst_main = out_dir / 'libcustom_vulkan.so'
-        dst_main.write_bytes(data)
-        staged.append(dst_main)
-        say(f'custom Vulkan driver: {driver_path.name} → lib/arm64-v8a/libcustom_vulkan.so')
-    else:
-        raise BuildError(f'custom Vulkan driver must be a .zip, .adpkg, or .so file: {driver_path}')
-    return staged
-
-
 class Port:
     def __init__(self, opts):
         self.o = opts
@@ -284,10 +226,6 @@ class Port:
     def inputs(self):
         o = self.o
         say(f'game folder: {o.folder}')
-        if o.driver:
-            o.driver = Path(o.driver).expanduser().resolve()
-            if not o.driver.is_file() or o.driver.suffix.lower() not in ('.zip', '.adpkg', '.so'):
-                raise BuildError(f'--driver must be an existing .zip, .adpkg, or .so file: {o.driver}')
         self.app, self.fam = nsp.scan_nsps(o.folder, dumps.EXTS, o.keys)
         tid = f'{self.app:016X}'
         self.work = o.folder / f'{tid}_build'
@@ -748,12 +686,6 @@ class Port:
         if not self.so.is_file(): raise BuildError(f'build.py made no {self.so}')
         PROG.end(f'{self.so.stat().st_size / 2**20:.1f} MB')
 
-    def driver_extra_so(self):
-        """Extract or copy --driver (.zip / .adpkg with meta.json or raw .so) into <build folder>/android/driver/ as libcustom_vulkan.so (plus any companion lib*.so files),
-        returning the ['--extra-so', ...] arguments for mkapk.py"""
-        if not self.o.driver: return []
-        return [a for p in prepare_custom_driver(self.o.driver, self.aw / 'driver') for a in ('--extra-so', str(p))]
-
     # ---- apk: the host as a NativeActivity app, signed with the player's key ----
     def apk(self):
         PROG.stage('APK')
@@ -773,7 +705,6 @@ class Port:
                 + [a for f in ([driver] + [self.so.parent / n for n in ADRENOTOOLS_LIBS] if driver else []) for a in ('--extra-so', str(f))],
                 self.logs / 'android_apk.log', env=self.env)
         self.result['apk'] = str(self.apk_path)
-        if self.o.driver: self.result['driver'] = self.o.driver.name
         PROG.end(f'{self.apk_path.name}, {self.apk_path.stat().st_size / 2**20:.1f} MB')
 
     def external_activity(self):
