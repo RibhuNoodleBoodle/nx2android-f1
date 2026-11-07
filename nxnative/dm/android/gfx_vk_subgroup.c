@@ -117,8 +117,8 @@ uint32_t *spv_one_lane(const uint32_t *w, uint32_t nw, uint32_t ops, uint32_t *o
     memcpy(o, w, 20);
     for (uint32_t i = 5; i < nw; i += w[i] >> 16) { const uint32_t *x = &w[i]; uint32_t n = x[0] >> 16, op = x[0] & 0xffff;
         if (i == fn) { memcpy(o + no, c.d, (size_t)c.nd * 4); no += c.nd; }   // the new declarations, after every type and constant they name
-        if (op == 17 && n == 2 && ((x[1] >= 61 && x[1] <= 68) || x[1] == 4423 || x[1] == 4431)) continue;   // OpCapability GroupNonUniform*, SubgroupBallotKHR, SubgroupVoteKHR
-        if (op == 10 && n >= 2 && (!strncmp((const char *)&x[1], "SPV_KHR_shader_ballot", (n - 1) * 4) || !strncmp((const char *)&x[1], "SPV_KHR_subgroup_vote", (n - 1) * 4))) continue;
+        if (op == 17 && n == 2 && ((x[1] >= 61 && x[1] <= 68) || x[1] == 4423 || x[1] == 4427 || x[1] == 4431)) continue;   // OpCapability GroupNonUniform*, SubgroupBallotKHR, SubgroupSizeControl, SubgroupVoteKHR
+        if (op == 10 && n >= 2 && (!strncmp((const char *)&x[1], "SPV_KHR_shader_ballot", (n - 1) * 4) || !strncmp((const char *)&x[1], "SPV_KHR_subgroup_vote", (n - 1) * 4) || !strncmp((const char *)&x[1], "SPV_EXT_subgroup_size_control", (n - 1) * 4))) continue;
         if ((op == 71 || op == 332 || op == 5632) && ID(1) && t[x[1]].mark == 1) continue;   // the built-in's decorations (BuiltIn, Flat)
         if (op == 59 && ID(2) && t[x[2]].mark == 1) continue;   // its Input variable
         if (op == 74) for (uint32_t k = 2; k < n; k++) if (x[k] < bound && t[x[k]].mark == 1) { snprintf(why, nwhy, "opcode 74 naming a built-in"); free(o); o = NULL; goto out; }   // OpGroupDecorate

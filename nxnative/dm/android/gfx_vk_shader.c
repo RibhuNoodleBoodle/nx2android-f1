@@ -317,6 +317,14 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
       char why[64]; uint32_t n2 = 0, *w2 = spv_one_lane(w, nw, ops, &n2, why, sizeof why);
       if (w2) { free(w); w = w2; nw = n2; VKLOG("shader %016llx (stage %d): subgroups of one invocation (the device's subgroup operations in this stage: %#x)", (unsigned long long)key, stage, ops); }
       else if (why[0]) VKLOG("[RED] shader %016llx (stage %d) uses subgroup operations the device lacks in this stage (it has %#x), and %s is not covered by the one-invocation rewrite: left as it is", (unsigned long long)key, stage, ops, why); }
+    if (!(V.sg_stages & stage_flag(stage))) { uint32_t o = 5;
+      for (uint32_t i = 5; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n || i + n > nw) { while (i < nw) w[o++] = w[i++]; break; }
+          int drop = (op == 17 && n == 2 && ((w[i + 1] >= 61 && w[i + 1] <= 68) || w[i + 1] == 4423 || w[i + 1] == 4427 || w[i + 1] == 4431)) ||
+                     (op == 10 && (!strncmp((const char *)&w[i + 1], "SPV_KHR_shader_ballot", (n - 1) * 4) ||
+                                   !strncmp((const char *)&w[i + 1], "SPV_KHR_subgroup_vote", (n - 1) * 4) ||
+                                   !strncmp((const char *)&w[i + 1], "SPV_EXT_subgroup_size_control", (n - 1) * 4)));
+          if (drop) i += n; else for (uint32_t k = 0; k < n; k++) w[o++] = w[i++]; }
+      nw = o; }
     if (stage == 0) { uint32_t n2 = 0, *w2 = spv_vs_init(w, nw, &n2); if (w2) { free(w); w = w2; nw = n2; } }
     // Maxwell's FMNMX returns the operand that is a number when the other is NaN, and its saturate turns NaN into 0 (IEEE minNum / maxNum, as Metal's fmin / fmax).
     // The translator emits GLSL.std.450 FMin / FMax / FClamp, whose result is undefined for a NaN operand, and Adreno passes the NaN on: their NaN-aware forms NMin /

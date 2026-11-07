@@ -1,0 +1,5 @@
+# Written by porter for an experimental port: the game has not been brought up on Android
+status	experimental
+package	org.nx2a.t01006c5015e84000
+orientation	landscape
+env	DM_APP_POOL=2500M
