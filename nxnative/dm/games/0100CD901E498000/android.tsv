@@ -1,5 +1,5 @@
 # System Shock 2: 25th Anniversary Remaster on Android (dm/android/tools/android_profile.py)
-status	wip
+status	playable
 tested	v131072 Xiaomi POCO F1 (Snapdragon 845, Adreno 630, Android 15 LineageOS 22.2); PurpleVK-public git-62ac221a33 (Turnip T30)
 package	org.nx2a.t0100cd901e498000
 orientation	landscape
