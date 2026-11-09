@@ -1,5 +1,8 @@
-# Written by porter for an experimental port: the game has not been brought up on Android
+# Disco Elysium - The Final Cut on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Tested on Xiaomi Poco F1 (Snapdragon 845, Adreno 630 with Turnip Mesa 26.3.0-T30, Android 15 LineageOS 22.2):
+# In-game, intro hotel room boots with Turnip T30 driver.
 status	experimental
+tested	v0 Xiaomi Poco F1 (Snapdragon 845, Adreno 630 with Turnip Mesa 26.3.0-T30, Android 15 LineageOS 22.2)
 package	org.nx2a.t01006c5015e84000
 orientation	landscape
 env	DM_APP_POOL=3500M
