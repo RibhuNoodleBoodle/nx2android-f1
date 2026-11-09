@@ -472,7 +472,7 @@ static int cpu_content_tex(const tex_t *t, const vkfmt_t *f) {
     static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_STORAGE_FIRST_USE"); on = !e || atoi(e) != 0; }
     if (!on || !t->pool || t->has_layout || !(f->compressed || t->d.target == 2) || t->d.samples > 1) return 0;
     if (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) return 0;
-    if (t->d.flags & (NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE)) return 0;
+    if (t->d.flags & (NVN_TEXTURE_FLAGS_IMAGE | (!f->compressed ? NVN_TEXTURE_FLAGS_COMPRESSIBLE : 0) | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE)) return 0;
     if (!mem_any(t->mem, t->L.size)) return 0;
     static int n; if (n++ < 8) VKLOG("texture %ux%ux%u nvn format %#x at %p (pool flags %#x): the CPU filled it before its first use: uploaded from its storage", t->d.width, t->d.height, t->d.depth, t->d.format, (const void *)t->mem, t->pool->flags);
     mtl_tex_cpu_written(t);
@@ -833,20 +833,26 @@ VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
     VkBufferView v = nvn_hm_get(&g_tbuf_cache, &k);
     if (!v) {
         const vkfmt_t *f = vk_fmt(t->d.format); VkBuffer b; VkDeviceSize off = 0;
-        uint32_t al = (uint32_t)V.props.limits.minTexelBufferOffsetAlignment;
         int in = f && t->mem && vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)t->d.width * f->bpb, &b, &off);
-        if (in && off % al == 0) {
+        if (in && (!f->bpb || off % f->bpb == 0)) {
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, b, f->vk, off, (VkDeviceSize)t->d.width * f->bpb};
-            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else nvn_hm_put(&g_tbuf_cache, &k, v);
-        } else if (in && !storage) {
+            if (vkCreateBufferView(V.dev, &ci, NULL, &v) == VK_SUCCESS) {
+                nvn_hm_put(&g_tbuf_cache, &k, v);
+            } else {
+                v = VK_NULL_HANDLE;
+            }
+        }
+        if (!v && in && !storage) {
+            uint32_t al = (uint32_t)V.props.limits.minTexelBufferOffsetAlignment;
+            if (!al) al = 16;
             VkDeviceSize n = (VkDeviceSize)t->d.width * f->bpb, so; VkBuffer sb; void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst);
             uint8_t *p = vk_scratch(n, al, &sb, &so); vk_ubd_read((uint64_t)(uintptr_t)t->mem, n, p);
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, sb, f->vk, so, n};
             if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else vk_defer_free_bview(v);
             static unsigned nc; if (nc++ < 4) VKLOG("buffer texture at a misaligned offset (%llu, not a multiple of %u; format %#x, %u elements): read from a copy", (unsigned long long)off, al, t->d.format, t->d.width);
             pthread_mutex_unlock(&g_tbuf_mu); return v;   // (not cached: a copy of this bind's bytes)
-        } else if (in) VKRED_ONCE(16, "storage buffer texture at a misaligned offset: %llu, not a multiple of %u (format %#x, %u elements): zeros", (unsigned long long)off, al, t->d.format, t->d.width);
-        else VKRED_ONCE(16, "buffer texture not in a pool (format %#x, %u elements)", t->d.format, t->d.width);
+        } else if (!v && in) VKRED_ONCE(16, "storage buffer texture at a misaligned offset: %llu (format %#x, %u elements): zeros", (unsigned long long)off, t->d.format, t->d.width);
+        else if (!v) VKRED_ONCE(16, "buffer texture not in a pool (format %#x, %u elements)", t->d.format, t->d.width);
     }
     pthread_mutex_unlock(&g_tbuf_mu);
     return v;
