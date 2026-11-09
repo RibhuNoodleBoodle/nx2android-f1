@@ -1028,7 +1028,7 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
 // ends anyway, and at the end of the submission (vk_ubd_land), so later passes, copies, dispatches and the CPU see them as before.
 typedef struct { uint64_t lo, hi; VkBuffer sb; VkDeviceSize so; const uint8_t *p; } ubd_t;
 enum { UBD_MAX = 512 };
-static ubd_t g_ubd[UBD_MAX]; static int g_nubd; uint64_t g_ubd_gen = 1, g_ubd_landed, g_ubd_shadows, g_ubd_bytes, g_ns_submit, g_ubd_superseded;
+static ubd_t g_ubd[UBD_MAX]; static int g_nubd; uint64_t g_ubd_gen = 1, g_ubd_landed, g_ubd_shadows, g_ubd_bytes, g_ns_submit, g_ns_submit_lock, g_ubd_superseded;
 void vk_end_pass_land(void);
 void vk_sub_update(uint64_t dst, const void *data, uint64_t n) {
     VkBuffer db, sb; VkDeviceSize dof, so;
@@ -1038,7 +1038,9 @@ void vk_sub_update(uint64_t dst, const void *data, uint64_t n) {
     // so the list keeps about one entry per buffer region, which keeps the landing to a few copies and the shadows cheap to build)
     for (int i = g_nubd - 1; i >= 0; i--) if (g_ubd[i].lo == dst && g_ubd[i].hi == dst + n) { memmove(&g_ubd[i], &g_ubd[i + 1], sizeof *g_ubd * (size_t)(g_nubd - i - 1)); g_nubd--; g_ubd_superseded++; break; }
     if (g_nubd == UBD_MAX) vk_end_pass_land();   // too many distinct ranges: they land now
-    uint8_t *p = vk_scratch(n, 4, &sb, &so); memcpy(p, data, n);
+    // Align captured uniforms so a binding fully covered by this update can use
+    // the capture directly, with no guest-memory read or second scratch copy.
+    uint8_t *p = vk_scratch(n, V.props.limits.minUniformBufferOffsetAlignment, &sb, &so); memcpy(p, data, n);
     g_ubd[g_nubd++] = (ubd_t){dst, dst + n, sb, so, p}; g_ubd_gen++;
 }
 // the draw bisection (gfx_vk_exec.c draw_allowed): the outcome of this submission
@@ -1107,13 +1109,27 @@ void vk_gpu_wrote(uint64_t a, uint64_t n) {
 int vk_gpu_pending(uint64_t a, uint64_t n) {
     if (!g_ngw) return 0;
     uint64_t done = vk_fence_done();
-    for (int i = g_ngw - 1; i >= 0; i--) if (g_gw[i].fence > done && g_gw[i].lo < a + n && a < g_gw[i].hi) return 1;
+    // Entries are appended in fence order. Once a completed fence is reached,
+    // every earlier entry is complete as well.
+    for (int i = g_ngw - 1; i >= 0; i--) {
+        if (g_gw[i].fence <= done) break;
+        if (g_gw[i].lo < a + n && a < g_gw[i].hi) return 1;
+    }
     return 0;
 }
 // what a GPU read of [a, a + n) sees at this point of the command stream, into dst (memory, then the deferred updates in order)
 void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst) {
     if (vk_gpu_pending(a, n)) { static int k; g_ubd_racy++; if (k < 20) { k++; int cov = 0; for (int i = 0; i < g_nubd; i++) if (g_ubd[i].lo <= a && a + n <= g_ubd[i].hi) cov = 1;
         VKLOG("[RED] a CPU read of %#llx +%llu (%s) overlaps a GPU write not known to be complete", (unsigned long long)a, (unsigned long long)n, cov ? "covered by a deferred update" : "partly from memory"); } }
+    // Only the newest overlapping update can replace the whole read: a later
+    // partial update must still be applied over its predecessors in order.
+    for (int i = g_nubd - 1; i >= 0; i--) {
+        if (g_ubd[i].lo >= a + n || a >= g_ubd[i].hi) continue;
+        if (g_ubd[i].lo <= a && a + n <= g_ubd[i].hi) {
+            memcpy(dst, g_ubd[i].p + (a - g_ubd[i].lo), n); return;
+        }
+        break;
+    }
     memcpy(dst, (const void *)(uintptr_t)a, n);
     if (g_ninfl) { uint64_t done = vk_fence_done();
         for (int i = 0; i < g_ninfl; i++) { if (g_infl[i].fence <= done) continue; uint64_t lo = g_infl[i].lo > a ? g_infl[i].lo : a, hi = g_infl[i].hi < a + n ? g_infl[i].hi : a + n;
@@ -1124,6 +1140,17 @@ void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst) {
 // a uniform binding [a, a + n) that deferred updates overlap: its shadow (0 when none overlaps). Shadows are kept per (address, size) until the next update.
 int vk_ubd_shadow(uint64_t a, uint64_t n, VkBuffer *buf, VkDeviceSize *off) {
     if (!g_nubd || !vk_ubd_overlaps(a, n)) return 0;   // (a binding no deferred update touches reads memory on the GPU, after the in-flight copies: no shadow needed)
+    // Captures live until this submission completes. Reuse one only when the
+    // newest overlapping update covers the entire binding and the offset meets
+    // Vulkan's uniform-buffer alignment. Partial overlaps retain the merge path.
+    for (int i = g_nubd - 1; i >= 0; i--) {
+        if (g_ubd[i].lo >= a + n || a >= g_ubd[i].hi) continue;
+        VkDeviceSize o = g_ubd[i].so + (a - g_ubd[i].lo);
+        if (g_ubd[i].lo <= a && a + n <= g_ubd[i].hi && !(o % V.props.limits.minUniformBufferOffsetAlignment)) {
+            *buf = g_ubd[i].sb; *off = o; return 1;
+        }
+        break;
+    }
     enum { NC = 64 }; static struct { uint64_t a, n, gen; VkBuffer b; VkDeviceSize o; } c[NC];
     unsigned k = (unsigned)((a ^ n * 0x9E3779B97F4A7C15ull) >> 6) % NC;
     extern int g_x_noshc; if (c[k].a == a && c[k].n == n && c[k].gen == g_ubd_gen && !g_x_noshc) { *buf = c[k].b; *off = c[k].o; return 1; }
@@ -1247,7 +1274,8 @@ uint64_t mtl_sub_commit(void) {
         if (f > NFRING) mtl_wait(f - NFRING, ~0ull);
         fe = g_fring[f % NFRING]; VKCHK(vkResetFences(V.dev, 1, &fe)); si.pNext = NULL; si.signalSemaphoreCount = 0;
     }
-    struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0); pthread_mutex_lock(&g_vk_queue_mu); VkResult r = vkQueueSubmit(V.q, 1, &si, fe); pthread_mutex_unlock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &t1); g_ns_submit += (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
+    struct timespec t0, tl, t1; clock_gettime(CLOCK_MONOTONIC, &t0); pthread_mutex_lock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &tl); VkResult r = vkQueueSubmit(V.q, 1, &si, fe); pthread_mutex_unlock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &t1); g_ns_submit += (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
+    g_ns_submit_lock += (uint64_t)((tl.tv_sec - t0.tv_sec) * 1000000000ll + (tl.tv_nsec - t0.tv_nsec));
     if (r) { void vk_crumbs_report(void); vk_crumbs_report(); die("[vk] vkQueueSubmit: %d (device lost?)", r); }
     s->fence = f;
     cpend *c = calloc(1, sizeof *c); c->fence = f; c->frame = __atomic_load_n(&g_cur_frame, __ATOMIC_RELAXED); c->n = s->npost; c->rslot = g_cur; c->slot = s->no_ts ? -1 : g_cur; s->no_ts = 0;

@@ -161,7 +161,11 @@ static void run(const rec_hdr *h) {
     }
 }
 static void *recorder_main(void *arg) {
-    (void)arg; pthread_setname_np(pthread_self(), "vk record"); uint64_t r = 0;
+    (void)arg; pthread_setname_np(pthread_self(), "vk record");
+    // The optional recorder does the driver's vkCmd work. Apply the same
+    // requested CPU placement as replay so it cannot become a small-core bottleneck.
+    void dm_perf_replay_thread(void); dm_perf_replay_thread();
+    uint64_t r = 0;
     for (;;) {
         uint64_t pub = atomic_load(&g_pub);
         if (r == pub) {

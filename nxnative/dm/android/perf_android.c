@@ -124,7 +124,7 @@ static void hint_threads_scan(int32_t self) {
     LOG("[perf] ADPF session threads:%s", l);
 }
 
-// DM_PIN_REPLAY (start-up): the replay thread (DM_NVN_ASYNC, hle_nvn.c replay_main) kept to the fastest cores. prime: the cores of the highest maximum clock
+// DM_PIN_REPLAY (start-up): the replay thread and optional Vulkan recorder kept to the fastest cores. prime: the cores of the highest maximum clock
 // (a Snapdragon 8+ Gen 1's Cortex-X2), big: every core above the lowest maximum clock. Left to the scheduler, Unicorn Overlord's battle map replay took
 // 13 to 20 ms a frame from run to run with the same ~3,500 draws
 void dm_perf_replay_thread(void) {
@@ -137,7 +137,7 @@ void dm_perf_replay_thread(void) {
     cpu_set_t set; CPU_ZERO(&set); char l[96]; size_t o = 0;
     for (long c = 0; c < n; c++) if (prime ? mhz[c] == hi : mhz[c] > lo) { CPU_SET(c, &set); o += snprintf(l + o, sizeof l - o, " %ld", c); }
     if (sched_setaffinity(0, sizeof set, &set)) { LOG("[perf] DM_PIN_REPLAY: sched_setaffinity refused"); return; }
-    LOG("[perf] replay thread on CPUs%s (%s, up to %ld MHz)", l, prime ? "prime" : "big", hi);
+    LOG("[perf] graphics worker on CPUs%s (%s, up to %ld MHz)", l, prime ? "prime" : "big", hi);
 }
 
 static int64_t g_work_start;
