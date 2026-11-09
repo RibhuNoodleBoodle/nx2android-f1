@@ -199,9 +199,14 @@ JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalInput(JNIEnv *env,
     if (g_ilooper) ALooper_wake(g_ilooper);
 }
 static uint64_t g_btn; static float g_ax[8]; static int g_pad_used;   // lx ly rx ry lt rt hatx haty
-static uint64_t key_bit(int32_t k) {   // Nintendo layout by position: the bottom face button is B, the right one A (as the iOS front end maps)
+static uint64_t key_bit(int32_t k) {   // Physical controller face buttons map directly by label (Xbox/universal layout: A->A, B->B, X->X, Y->Y; DM_PAD_LAYOUT=nintendo for position)
+    static int nintendo = -1;
+    if (nintendo < 0) { const char *e = getenv("DM_PAD_LAYOUT"); nintendo = e && !strcasecmp(e, "nintendo"); }
     switch (k) {
-    case AKEYCODE_BUTTON_A: return DM_BTN_B; case AKEYCODE_BUTTON_B: return DM_BTN_A; case AKEYCODE_BUTTON_X: return DM_BTN_Y; case AKEYCODE_BUTTON_Y: return DM_BTN_X;
+    case AKEYCODE_BUTTON_A: return nintendo ? DM_BTN_B : DM_BTN_A;
+    case AKEYCODE_BUTTON_B: return nintendo ? DM_BTN_A : DM_BTN_B;
+    case AKEYCODE_BUTTON_X: return nintendo ? DM_BTN_Y : DM_BTN_X;
+    case AKEYCODE_BUTTON_Y: return nintendo ? DM_BTN_X : DM_BTN_Y;
     case AKEYCODE_BUTTON_L1: return DM_BTN_L; case AKEYCODE_BUTTON_R1: return DM_BTN_R; case AKEYCODE_BUTTON_L2: return DM_BTN_ZL; case AKEYCODE_BUTTON_R2: return DM_BTN_ZR;
     case AKEYCODE_BUTTON_THUMBL: return DM_BTN_LS; case AKEYCODE_BUTTON_THUMBR: return DM_BTN_RS; case AKEYCODE_BUTTON_START: return DM_BTN_PLUS; case AKEYCODE_BUTTON_SELECT: return DM_BTN_MINUS;
     case AKEYCODE_DPAD_UP: return DM_BTN_UP; case AKEYCODE_DPAD_DOWN: return DM_BTN_DOWN; case AKEYCODE_DPAD_LEFT: return DM_BTN_LEFT; case AKEYCODE_DPAD_RIGHT: return DM_BTN_RIGHT;
