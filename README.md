@@ -17,6 +17,7 @@ These games are targeted for Xiaomi Poco F1 (Snapdragon 845, Adreno 630). Hardwa
 |:---:|:---:|
 | ![Blasphemous 2](docs/images/blasphemous-2.jpg)<br>Blasphemous 2<br><sub>`poco-f1` · update 1.0.8 · 60 fps</sub> | ![Hades II](docs/images/hades-ii.jpg)<br>Hades II<br><sub>`poco-f1` · update 1.0 · 60 fps</sub> |
 | ![Disco Elysium - The Final Cut](docs/images/disco-elysium.jpg)<br>Disco Elysium: The Final Cut<br><sub>`poco-f1` · base game 1.0.0 · **experimenting / testing** · Turnip T30</sub> | ![System Shock 2: 25th Anniversary Remaster](docs/images/system-shock-2.jpg)<br>System Shock 2: 25th Anniversary Remaster<br><sub>`poco-f1` · update 1.3.0 · 60 fps · Turnip T30</sub> |
+| ![The Long Dark](docs/images/the-long-dark.jpg)<br>The Long Dark<br><sub>`poco-f1` · base game 1.0.0 (v983040) · **in the works / testing** · Turnip T30</sub> | |
 
 A game that is not in this table is not supported yet. The games we look at next, and the ones done: [docs/PORT_CHECKLIST.md](docs/PORT_CHECKLIST.md).
 
