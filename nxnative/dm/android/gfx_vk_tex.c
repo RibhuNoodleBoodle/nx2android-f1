@@ -222,7 +222,7 @@ void vk_tex_prepare(VkCommandBuffer cb, vkimg_t *im) {
     // a texture that builds on its previous frame: made again by the switch to docked mode, it started from leftover memory, and blocks of it stayed on the water from then on.
     // So an image starts as zeros, before an upload or a draw replaces them. Block-compressed images can't be cleared; they are always uploaded
     const vkfmt_t *f = vk_fmt(im->nvn_format);
-    if (!(im->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) || (f && f->compressed)) return;
+    if (!(im->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) || (f && f->compressed) || im->gpu_w) return;
     VkImageSubresourceRange r = {im->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
     if (im->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) { VkClearDepthStencilValue z = {0, 0}; vkCmdClearDepthStencilImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &r); }
     else { VkClearColorValue z = {{0, 0, 0, 0}}; vkCmdClearColorImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &r); }
@@ -307,12 +307,18 @@ extern uint64_t g_tex_frame;   // presents so far, for the packaged textures' la
 // after 20 minutes) and Android's low-memory killer ended the game. A new image takes over: the images of the same pool over its memory that were not looked up in the
 // last EVICT_KEEP presents go (their memory now holds another texture; one drawn again is made and filled again). Called with g_img_mu held
 enum { EVICT_KEEP = 60 };
+static int mem_any(const uint8_t *p, uint64_t n) {   // whether any byte is non-zero (stops at the first)
+    uint64_t i = 0, v;
+    for (; i + 8 <= n; i += 8) { memcpy(&v, p + i, 8); if (v) return 1; }
+    for (; i < n; i++) if (p[i]) return 1;
+    return 0;
+}
 static uint64_t g_img_n, g_img_bytes, g_img_evicted;   // live images and their bytes, images evicted so far (vk_tex_sweep's line)
 static void img_drop(vkimg_t *im) { vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
 static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     akey ks[64]; int n = 0;
     for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
-        vkimg_t *o = g_by_key.vals[i]; if (!o || o->pool != pool || o->off >= off + size || off >= o->off + o->size || g_tex_frame - o->used < EVICT_KEEP) continue;
+        vkimg_t *o = g_by_key.vals[i]; if (!o || o->pool != pool || o->off >= off + size || off >= o->off + o->size || g_tex_frame - o->used < EVICT_KEEP || (o->gpu_w && o->w == 1 && o->h == 1)) continue;
         memcpy(&ks[n++], g_by_key.keys + (size_t)i * g_by_key.klen, sizeof(akey));
     }
     for (int j = 0; j < n; j++) { vkimg_t *o = nvn_hm_get(&g_by_key, &ks[j]); if (!o) continue; nvn_hm_del(&g_by_key, &ks[j]); img_drop(o); g_img_evicted++; }
@@ -350,7 +356,22 @@ static vkimg_t *vk_tex_(const tex_t *t) {
     if (t->mem && lin_copy(im, t, f)) {}
     else if (t->mem && (packaged_tex(t) || (first && (nvn_ft_written(t) || cpu_content_tex(t, f))))) {
         im->pkg_used = g_tex_frame;
-        if (!im->packaged) { im->packaged = 1; pkg_upload(im, t, f); }
+        if (!im->packaged) {
+            im->packaged = 1;
+            if (im->gpu_w && !mem_any(t->mem, t->L.size)) {
+                nvn_dirty_protect(t->mem, t->L.size);
+                im->pkg_stamp = nvn_dirty_now();
+                im->pkg_span = nvn_dirty_span(t->mem, t->L.size);
+                im->pkg_seen = im->pkg_stamp;
+                im->pkg_mem = t->mem;
+                im->pkg_len = t->L.size;
+                im->pkg_released = 0;
+                im->pkg_hash = pkg_hash(t->mem, t->L.size);
+                static int ng; if (ng++ < 16) VKLOG("texture %ux%u nvn format %#x at %p: already written by GPU and mem empty (gpu_w=1): kept", t->d.width, t->d.height, t->d.format, (const void *)t->mem);
+            } else {
+                pkg_upload(im, t, f);
+            }
+        }
         else {
             uint64_t now = nvn_dirty_now();
             if (now != im->pkg_seen && nvn_dirty_since_span(im->pkg_span, t->mem, t->L.size, im->pkg_stamp)) {   // pages written since the upload
@@ -364,7 +385,7 @@ static vkimg_t *vk_tex_(const tex_t *t) {
             }
             im->pkg_seen = now;
         }
-    } else if (first) vk_tex_prepare(vk_upload_cmd(), im);
+    } else if (first && !im->gpu_w) vk_tex_prepare(vk_upload_cmd(), im);
     return im;
 }
 // Packaged textures give up their write protection (nvn_dirty_release; drawn again, they are uploaded and protected again) when not drawn for PKG_IDLE presents, and the
@@ -462,19 +483,13 @@ static int lin_copy(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {   // 1 = th
 // change. The compressed case was missing here: Xenoblade Chronicles 3's particle sprites (the husks' 128x128 BC7 sRGB, flags 0) were images of zeros, so the particle
 // pixel shader read alpha 0 and discarded every pixel (no red husk particles, no send-off ones). A pool the CPU cannot access is filled from its storage once in the same way, as the
 // Mac's tex_init_fill does (the game cannot write it again). DM_NVN_STORAGE_FIRST_USE=0 turns this off
-static int mem_any(const uint8_t *p, uint64_t n) {   // whether any byte is non-zero (stops at the first)
-    uint64_t i = 0, v;
-    for (; i + 8 <= n; i += 8) { memcpy(&v, p + i, 8); if (v) return 1; }
-    for (; i < n; i++) if (p[i]) return 1;
-    return 0;
-}
 static int cpu_content_tex(const tex_t *t, const vkfmt_t *f) {
     static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_STORAGE_FIRST_USE"); on = !e || atoi(e) != 0; }
-    if (!on || !t->pool || t->has_layout || !(f->compressed || t->d.target == 2) || t->d.samples > 1) return 0;
+    if (!on || !t->pool || t->has_layout || t->d.samples > 1 || f->depth || f->stencil) return 0;
     if (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) return 0;
-    if (t->d.flags & (NVN_TEXTURE_FLAGS_IMAGE | (!f->compressed ? NVN_TEXTURE_FLAGS_COMPRESSIBLE : 0) | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE)) return 0;
+    if (t->d.flags & (NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE | NVN_TEXTURE_FLAGS_ADAPTIVE_ZCULL)) return 0;
     if (!mem_any(t->mem, t->L.size)) return 0;
-    static int n; if (n++ < 8) VKLOG("texture %ux%ux%u nvn format %#x at %p (pool flags %#x): the CPU filled it before its first use: uploaded from its storage", t->d.width, t->d.height, t->d.depth, t->d.format, (const void *)t->mem, t->pool->flags);
+    static int n; if (n++ < 16) VKLOG("texture %ux%ux%u nvn format %#x at %p (pool flags %#x): the CPU filled it before its first use: uploaded from its storage", t->d.width, t->d.height, t->d.depth, t->d.format, (const void *)t->mem, t->pool->flags);
     mtl_tex_cpu_written(t);
     return 1;
 }

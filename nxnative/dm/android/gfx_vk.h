@@ -71,6 +71,8 @@ vkpool_t *vk_pool_of(uint64_t addr, uint64_t len);   // the pool containing [add
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off);   // GPU buffer + offset of a pool address range
 // Pools that could not be made zero-copy keep a GPU copy refreshed before each submission (vk_pools_sync, called from mtl_sub_begin)
 void vk_pools_sync(VkCommandBuffer cb);
+// Flush CPU cache for a pool's memory range (for non-coherent / zero-copy pools). Returns 1 if flushed, 0 if coherent or not found.
+int vk_pool_flush_range(uint64_t addr, uint64_t len);
 
 // ---- submissions (gfx_vk_core.c) ----
 typedef struct vksub vksub_t;

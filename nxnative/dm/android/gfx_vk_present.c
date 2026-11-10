@@ -834,6 +834,15 @@ static uint64_t pace_desired(double period) {   // the frame's desired present t
     return t - g_refresh_ns / 2;
 }
 static void present_window(vkimg_t *im, const int crop[4], double period, uint64_t ticket) {   // period: the game's frame period (s); < 0 for a redraw (ticket 0)
+    static uint64_t n_presents;
+    const char *gl = getenv("DM_VK_GRAPHICS_LOG");
+    int gfx_log = gl ? atoi(gl) : 0;
+    if (gfx_log || (n_presents++ % 300 == 0)) {
+        VKLOG("present_window: im=%p (%ux%u fmt=%d layout=%d) crop=[%d,%d,%d,%d] sext=%ux%u ticket=%llu",
+              (void *)im, im ? im->w : 0, im ? im->h : 0, im ? im->fmt : 0, im ? im->layout : 0,
+              crop ? crop[0] : 0, crop ? crop[1] : 0, crop ? crop[2] : 0, crop ? crop[3] : 0,
+              g_sext.width, g_sext.height, (unsigned long long)ticket);
+    }
     uint32_t k = g_pi++ % 8;
     vkWaitForFences(V.dev, 1, &g_pfence[k], 1, UINT64_MAX);
     VkFormat want = im->fmt == VK_FORMAT_R8G8B8A8_SRGB || im->fmt == VK_FORMAT_B8G8R8A8_SRGB || im->fmt == VK_FORMAT_A8B8G8R8_SRGB_PACK32 ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;

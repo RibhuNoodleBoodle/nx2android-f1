@@ -405,6 +405,15 @@ static void pool_cache_sync(vkpool_t *p, int invalidate, uint64_t lo, uint64_t h
     else { VKCHK(vkFlushMappedMemoryRanges(V.dev, 1, &range)); }
     if (diag) mem_diag_note(invalidate ? 4 : 3, t, range.size == VK_WHOLE_SIZE ? p->hi - p->lo - range.offset : range.size);
 }
+
+// Flush the CPU cache for a pool's memory range, for non-coherent memory (zero-copy pools on Adreno).
+// Returns 1 if a Vulkan flush was performed, 0 if the pool is coherent or not found.
+int vk_pool_flush_range(uint64_t addr, uint64_t len) {
+    vkpool_t *p = vk_pool_of(addr, len ? len : 1);
+    if (!p || !p->noncoherent) return 0;
+    pool_cache_sync(p, 0, addr - p->lo, addr - p->lo + len);
+    return 1;
+}
 // Freed zero-copy pools' buffers, kept for the next pool of the same size (DM_VK_POOL_REUSE=0 turns it off): a pool made from one skips the hardware buffer's
 // allocation (a binder call to the allocator service) and the driver's import, which took Pokémon Scarlet's three loading threads ~130 + ~100 ms each while a thrown
 // ball's capture assets load (they drop old pools as they make new ones; the game waits on them, frames of 100-220 ms), and a pool dropped from a game thread no longer

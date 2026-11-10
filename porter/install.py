@@ -28,9 +28,13 @@ def romfs_target(arg, files=None):
     if files and d == f'{files}/{datapack.ROMFS}': return None
     if files and (d + '/').startswith(files + '/'): raise BuildError(f'--romfs-at {d}: the app\'s files folder is the installer\'s own; --romfs-at app keeps the RomFS there')
     if not d.startswith(('/sdcard/', '/storage/')): raise BuildError(f'--romfs-at {d}: the app can read only shared storage, /sdcard/… or /storage/… (an SD card: /storage/<its id>/…)')
-    if re.search(r'/Android/(data|obb)(/|$)', d, re.I):   # FUSE keeps every app out of the others' Android/data and Android/obb, All files access or not
-        raise BuildError(f'--romfs-at {d}: Android lets no app read a folder under another app\'s Android/data or Android/obb, even with All files access: '
-                         'move the game\'s files elsewhere (/sdcard/Games/…), or keep them in this app\'s files folder with --romfs-at app')
+    pkg = re.search(r'/Android/data/([^/]+)/files', files).group(1) if files and re.search(r'/Android/data/([^/]+)/files', files) else None
+    m = re.search(r'/Android/(data|obb)(?:/([^/]+)|$)', d, re.I)
+    if m:
+        target_pkg = m.group(2)
+        if not (pkg and target_pkg and target_pkg.lower() == pkg.lower() and (d.endswith(f'/Android/data/{target_pkg}/files') or f'/Android/data/{target_pkg}/files/' in d)):
+            raise BuildError(f'--romfs-at {d}: Android lets no app read a folder under another app\'s Android/data or Android/obb, even with All files access: '
+                             'move the game\'s files elsewhere (/sdcard/Games/…), or keep them in this app\'s files folder with --romfs-at app')
     if len(d.encode()) > 512: raise BuildError(f'--romfs-at: a folder path of at most 512 bytes (the host\'s path buffers): {d}')
     return d
 

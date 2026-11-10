@@ -438,7 +438,7 @@ def title_of(path, hk=None):
 
 
 def version_of(path):
-    m = re.search(r'\[v(\d+)\]', path.name)
+    m = re.search(r'\[v(\d+)\]', path.name) or re.search(r'[\s_]v(\d+)', path.name)
     return int(m.group(1)) if m else None
 
 
